@@ -1,0 +1,48 @@
+{
+  "version": 1,
+  "description": "Seed catalog of public trend sources. First run copies these into the SQLite sources table; the dashboard can toggle, edit or add sources afterwards.",
+  "feeds": [
+    { "id": "vnexpress-tin-moi", "name": "VnExpress - Tin mới nhất", "url": "https://vnexpress.net/rss/tin-moi-nhat.rss", "language": "vi", "category": "vietnam", "weight": 1.15, "enabled": true },
+    { "id": "vnexpress-the-gioi", "name": "VnExpress - Thế giới", "url": "https://vnexpress.net/rss/the-gioi.rss", "language": "vi", "category": "international", "weight": 1.1, "enabled": true },
+    { "id": "vnexpress-kinh-doanh", "name": "VnExpress - Kinh doanh", "url": "https://vnexpress.net/rss/kinh-doanh.rss", "language": "vi", "category": "business", "weight": 1.0, "enabled": true },
+    { "id": "vnexpress-so-hoa", "name": "VnExpress - Số hóa", "url": "https://vnexpress.net/rss/so-hoa.rss", "language": "vi", "category": "technology", "weight": 1.05, "enabled": true },
+    { "id": "vnexpress-khoa-hoc", "name": "VnExpress - Khoa học", "url": "https://vnexpress.net/rss/khoa-hoc.rss", "language": "vi", "category": "science", "weight": 1.0, "enabled": true },
+    { "id": "vnexpress-giai-tri", "name": "VnExpress - Giải trí", "url": "https://vnexpress.net/rss/giai-tri.rss", "language": "vi", "category": "entertainment", "weight": 1.0, "enabled": true },
+    { "id": "vnexpress-suc-khoe", "name": "VnExpress - Sức khỏe", "url": "https://vnexpress.net/rss/suc-khoe.rss", "language": "vi", "category": "lifestyle", "weight": 0.9, "enabled": true },
+    { "id": "vnexpress-giao-duc", "name": "VnExpress - Giáo dục", "url": "https://vnexpress.net/rss/giao-duc.rss", "language": "vi", "category": "education", "weight": 0.9, "enabled": true },
+    { "id": "tuoitre-tin-moi", "name": "Tuổi Trẻ - Tin mới", "url": "https://tuoitre.vn/rss/tin-moi-nhat.rss", "language": "vi", "category": "vietnam", "weight": 1.1, "enabled": true },
+    { "id": "tuoitre-cong-nghe", "name": "Tuổi Trẻ - Công nghệ", "url": "https://tuoitre.vn/rss/cong-nghe.rss", "language": "vi", "category": "technology", "weight": 1.0, "enabled": true },
+    { "id": "thanhnien-tin-moi", "name": "Thanh Niên - Tin mới", "url": "https://thanhnien.vn/rss/home.rss", "language": "vi", "category": "vietnam", "weight": 1.05, "enabled": true },
+    { "id": "dantri-tin-moi", "name": "Dân Trí - Tin mới", "url": "https://dantri.com.vn/rss/home.rss", "language": "vi", "category": "vietnam", "weight": 1.0, "enabled": true },{"id": "vietnamnet-tin-moi", "name": "VietNamNet - Tin tức", "url": "https://vietnamnet.vn/rss/tin-tuc.rss", "language": "vi", "category": "vietnam", "weight": 1.0, "enabled": true },{"id": "nhandan-tin-moi", "name": "Nhân Dân - Tin mới", "url": "https://nhandan.vn/rss/home.rss", "language": "vi", "category": "vietnam", "weight": 1.05, "enabled": true},{"id": "kenh14-sao", "name": "Kenh14 - Giải trí", "url": "https://kenh14.vn/rss/home.rss", "language": "vi", "category": "entertainment", "weight": 0.95, "enabled": true},{"id": "genk-cong-nghe", "name": "GenK - Công nghệ", "url": "https://genk.vn/rss/home.rss", "language": "vi", "category": "technology", "weight": 0.95, "enabled": true },
+    { "id": "bbc-world", "name": "BBC News - World", "url": "https://feeds.bbci.co.uk/news/world/rss.xml", "language": "en", "category": "international", "weight": 1.15, "enabled": true },
+    { "id": "bbc-tech", "name": "BBC News - Technology", "url": "https://feeds.bbci.co.uk/news/technology/rss.xml", "language": "en", "category": "technology", "weight": 1.1, "enabled": true },
+    { "id": "guardian-world", "name": "The Guardian - World", "url": "https://www.theguardian.com/world/rss", "language": "en", "category": "international", "weight": 1.1, "enabled": true },
+    { "id": "guardian-tech", "name": "The Guardian - Technology", "url": "https://www.theguardian.com/uk/technology/rss", "language": "en", "category": "technology", "weight": 1.0, "enabled": true },
+    { "id": "guardian-science", "name": "The Guardian - Science", "url": "https://www.theguardian.com/science/rss", "language": "en", "category": "science", "weight": 1.0, "enabled": true },
+    { "id": "techcrunch", "name": "TechCrunch", "url": "https://techcrunch.com/feed/", "language": "en", "category": "technology", "weight": 1.0, "enabled": true },
+    { "id": "theverge", "name": "The Verge", "url": "https://www.theverge.com/rss/index.xml", "language": "en", "category": "technology", "weight": 1.0, "enabled": true },
+    { "id": "arstechnica", "name": "Ars Technica", "url": "https://feeds.arstechnica.com/arstechnica/index", "language": "en", "category": "technology", "weight": 0.95, "enabled": true },
+    { "id": "npr-news", "name": "NPR - News", "url": "https://feeds.npr.org/1001/rss.xml", "language": "en", "category": "international", "weight": 1.0, "enabled": true },
+    { "id": "hnrss-frontpage", "name": "Hacker News - Front Page", "url": "https://hnrss.org/frontpage", "language": "en", "category": "internet_culture", "weight": 0.85, "enabled": true }
+  ],
+  "google_news_topics": [
+    { "id": "gnews-vn-top", "name": "Google News VN - Nổi bật", "url": "https://news.google.com/rss?hl=vi&gl=VN&ceid=VN:vi", "language": "vi", "category": "vietnam", "weight": 1.2, "enabled": true },
+    { "id": "gnews-vn-tech", "name": "Google News VN - Công nghệ", "url": "https://news.google.com/rss/headlines/section/topic/TECHNOLOGY?hl=vi&gl=VN&ceid=VN:vi", "language": "vi", "category": "technology", "weight": 1.1, "enabled": true },
+    { "id": "gnews-vn-business", "name": "Google News VN - Kinh doanh", "url": "https://news.google.com/rss/headlines/section/topic/BUSINESS?hl=vi&gl=VN&ceid=VN:vi", "language": "vi", "category": "business", "weight": 1.05, "enabled": true },
+    { "id": "gnews-vn-entertainment", "name": "Google News VN - Giải trí", "url": "https://news.google.com/rss/headlines/section/topic/ENTERTAINMENT?hl=vi&gl=VN&ceid=VN:vi", "language": "vi", "category": "entertainment", "weight": 1.0, "enabled": true },
+    { "id": "gnews-vn-science", "name": "Google News VN - Khoa học", "url": "https://news.google.com/rss/headlines/section/topic/SCIENCE?hl=vi&gl=VN&ceid=VN:vi", "language": "vi", "category": "science", "weight": 1.0, "enabled": true },
+    { "id": "gnews-world", "name": "Google News - World", "url": "https://news.google.com/rss/headlines/section/topic/WORLD?hl=en-US&gl=US&ceid=US:en", "language": "en", "category": "international", "weight": 1.1, "enabled": true },
+    { "id": "gnews-ai", "name": "Google News - AI search", "url": "https://news.google.com/rss/search?q=artificial+intelligence&hl=en-US&gl=US&ceid=US:en", "language": "en", "category": "ai", "weight": 1.15, "enabled": true }
+  ],
+  "google_trends": {
+    "enabled": true,
+    "geos": ["VN", "US"],
+    "url_template": "https://trends.google.com/trending/rss?geo={geo}",
+    "weight": 1.25
+  },
+  "facebook": {
+    "enabled": false,
+    "description": "Optional. Uses the official Graph API with your own authorized token and a list of public page IDs you are allowed to read. No scraping, no auth bypass.",
+    "page_ids": []
+  }
+}

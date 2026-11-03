@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI Viral News &amp; Facebook Content Studio</title>
+  <link rel="stylesheet" href="/static/styles.css" />
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">AV</div>
+        <div class="brand-text">
+          <strong data-i18n="app.name">AI Viral News</strong>
+          <span data-i18n="app.subtitle">Facebook Content Studio</span>
+        </div>
+      </div>
+
+      <nav class="nav" id="mainNav">
+        <button class="nav-item is-active" data-view="dashboard">
+          <span class="nav-icon">◧</span><span data-i18n="nav.dashboard">Tổng quan</span>
+        </button>
+        <button class="nav-item" data-view="trends">
+          <span class="nav-icon">◈</span><span data-i18n="nav.trends">Xu hướng</span>
+        </button>
+        <button class="nav-item" data-view="posts">
+          <span class="nav-icon">▤</span><span data-i18n="nav.posts">Bài viết</span>
+        </button>
+        <button class="nav-item" data-view="jobs">
+          <span class="nav-icon">◔</span><span data-i18n="nav.jobs">Hàng đợi</span>
+          <span class="nav-badge" id="jobsBadge" hidden>0</span>
+        </button>
+        <button class="nav-item" data-view="settings">
+          <span class="nav-icon">⚙</span><span data-i18n="nav.settings">Cài đặt</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-status" id="sidebarStatus">
+        <div class="status-row" data-service="ollama">
+          <span class="dot" id="dotOllama"></span>
+          <span class="status-name">Ollama</span>
+          <span class="status-value" id="txtOllama">…</span>
+        </div>
+        <div class="status-row" data-service="comfyui">
+          <span class="dot" id="dotComfy"></span>
+          <span class="status-name">ComfyUI</span>
+          <span class="status-value" id="txtComfy">…</span>
+        </div>
+        <div class="status-row" data-service="gpu">
+          <span class="dot" id="dotGpu"></span>
+          <span class="status-name">GPU</span>
+          <span class="status-value" id="txtGpu">…</span>
+        </div>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="lang-switch" role="group" aria-label="Language">
+          <button class="lang-btn is-active" data-lang="vi">VI</button>
+          <button class="lang-btn" data-lang="en">EN</button>
+        </div>
+        <p class="hint" data-i18n="app.noPublish">Không bao giờ tự đăng Facebook.</p>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <h1 id="pageTitle">Tổng quan</h1>
+          <p id="pageSubtitle" class="subtitle"></p>
+        </div>
+        <div class="topbar-actions" id="topActions"></div>
+      </header>
+
+      <div class="views">
+        <section class="view is-active" id="view-dashboard">
+          <div class="stat-grid" id="statGrid"></div>
+          <div class="dashboard-columns">
+            <div class="panel">
+              <div class="panel-head">
+                <h2 data-i18n="dash.services">Trạng thái hệ thống</h2>
+                <button class="btn ghost sm" id="btnRefreshHealth" data-i18n="common.refresh">Làm mới</button>
+              </div>
+              <div id="serviceCards" class="service-cards"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <h2 data-i18n="dash.recentJobs">Công việc gần đây</h2>
+                <button class="btn ghost sm" data-goto="jobs" data-i18n="common.viewAll">Xem tất cả</button>
+              </div>
+              <div id="recentJobs" class="mini-list"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2 data-i18n="dash.topTrends">Chủ đề nổi bật</h2>
+              <button class="btn ghost sm" data-goto="trends" data-i18n="common.viewAll">Xem tất cả</button>
+            </div>
+            <div id="dashboardTrends" class="mini-trends"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-trends">
+          <div class="toolbar">
+            <div class="toolbar-group">
+              <label class="field-inline">
+                <span data-i18n="trends.category">Nhóm nội dung</span>
+                <select id="filterCategory"></select>
+              </label>
+              <label class="field-inline">
+                <span data-i18n="trends.status">Trạng thái</span>
+                <select id="filterStatus">
+                  <option value="" data-i18n="common.all">Tất cả</option>
+                  <option value="new" data-i18n="topicStatus.new">Mới</option>
+                  <option value="researched" data-i18n="topicStatus.researched">Đã nghiên cứu</option>
+                  <option value="drafted" data-i18n="topicStatus.drafted">Đã viết</option>
+                  <option value="ready" data-i18n="topicStatus.ready">Sẵn sàng</option>
+                </select>
+              </label>
+              <label class="field-inline">
+                <span data-i18n="trends.minScore">Điểm tối thiểu</span>
+                <input type="number" id="filterMinScore" min="0" max="100" step="5" value="0" />
+              </label>
+              <button class="btn ghost sm" id="btnApplyFilters" data-i18n="common.apply">Áp dụng</button>
+            </div>
+            <div class="toolbar-group">
+              <button class="btn primary" id="btnDiscover" data-i18n="trends.discover">Khám phá xu hướng</button>
+              <button class="btn ghost" id="btnBatch" data-i18n="trends.batch">Chạy hàng loạt</button>
+            </div>
+          </div>
+          <div class="selection-bar" id="selectionBar" hidden>
+            <span id="selectionCount"></span>
+            <button class="btn primary sm" id="btnRunSelected" data-i18n="trends.runSelected">Tạo nội dung đã chọn</button>
+            <button class="btn ghost sm" id="btnClearSelection" data-i18n="common.clear">Bỏ chọn</button>
+          </div>
+          <div id="trendList" class="trend-list"></div>
+        </section>
+
+        <section class="view" id="view-posts">
+          <div class="posts-layout">
+            <div class="panel posts-panel">
+              <div class="panel-head">
+                <h2 data-i18n="posts.title">Bài viết</h2>
+                <select id="postStatusFilter">
+                  <option value="" data-i18n="common.all">Tất cả</option>
+                  <option value="draft" data-i18n="postStatus.draft">Bản nháp</option>
+                  <option value="approved" data-i18n="postStatus.approved">Đã duyệt</option>
+                  <option value="rejected" data-i18n="postStatus.rejected">Từ chối</option>
+                  <option value="exported" data-i18n="postStatus.exported">Đã xuất</option>
+                </select>
+              </div>
+              <input type="search" id="postSearch" class="search" data-i18n-placeholder="posts.search" placeholder="Tìm bài viết…" />
+              <div id="postList" class="post-list"></div>
+            </div>
+            <div class="panel editor-panel" id="postDetail">
+              <div class="empty-state" data-i18n="posts.empty">Chọn một bài viết để xem và biên tập.</div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-jobs">
+          <div class="toolbar">
+            <div class="toolbar-group">
+              <span class="muted" id="queueSummary"></span>
+            </div>
+            <div class="toolbar-group">
+              <button class="btn ghost sm" id="btnRefreshJobs" data-i18n="common.refresh">Làm mới</button>
+            </div>
+          </div>
+          <div class="panel table-panel">
+            <table class="table" id="jobsTable">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th data-i18n="jobs.kind">Công việc</th>
+                  <th data-i18n="jobs.stage">Tiến trình</th>
+                  <th data-i18n="jobs.status">Trạng thái</th>
+                  <th data-i18n="jobs.started">Bắt đầu</th>
+                  <th data-i18n="common.actions">Thao tác</th>
+                </tr>
+              </thead>
+              <tbody></tbody>
+            </table>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2 data-i18n="jobs.logs">Nhật ký</h2></div>
+            <div id="logList" class="log-list"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-settings">
+          <div id="settingsSections"></div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toastHost" class="toast-host"></div>
+  <script src="/static/i18n.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>

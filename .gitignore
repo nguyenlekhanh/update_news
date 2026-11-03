@@ -1,0 +1,28 @@
+node_modules/
+.venv/
+.venv-kokoro/
+data/tts-cache/
+data/kokoro-cache/
+.DS_Store
+*.log
+*.m4a
+public/assets/bg_chant.m4a
+
+.freebuff
+.env
+.env.example
+data/llm-secrets.json
+data/llm-health.json
+data/*.tmp
+data/llm-secrets.json.*.tmp
+data/llm-health.json.*.tmp
+__pycache__/
+backup/
+config/piper/
+config/piper/en/piper-en-us-lessac-high.onnx
+
+# Tarot reading history (runtime viewer data)
+data/tarot-history.json
+
+# Local backup of the removed café music collection
+backups/

@@ -1,0 +1,96 @@
+{
+  "ui": {
+    "language": "vi"
+  },
+  "ollama": {
+    "base_url": "http://127.0.0.1:11434",
+    "model": "qwen3:8b",
+    "temperature": 0.8,
+    "top_p": 0.9,
+    "num_ctx": 8192,
+    "timeout_seconds": 240,
+    "keep_alive": "10m",
+    "think": false
+  },
+  "comfyui": {
+    "base_url": "http://127.0.0.1:8188",
+    "workflow_path": "config/workflows/default_sdxl_text2img.json",
+    "node_map": {},
+    "width": 1024,
+    "height": 1024,
+    "steps": 28,
+    "cfg": 7.0,
+    "sampler": "dpmpp_2m",
+    "scheduler": "karras",
+    "seed": -1,
+    "batch_size": 1,
+    "timeout_seconds": 420,
+    "filename_prefix": "aiviral",
+    "negative_prompt": "text, watermark, logo, signature, low quality, blurry, deformed hands, extra fingers, distorted face, photorealistic depiction of real identifiable people, fake news screenshot, fake documentary photo"
+  },
+  "writer": {
+    "language": "vi",
+    "style": "friendly_storytelling",
+    "tone": "engaging",
+    "audience": "general",
+    "length": "medium",
+    "hashtag_count": 6,
+    "category": "auto",
+    "include_sources": true,
+    "avoid_clickbait": true
+  },
+  "trends": {
+    "max_topics": 12,
+    "lookback_hours": 36,
+    "max_candidates": 400,
+    "min_score": 40.0,
+    "geo": "VN",
+    "categories": [
+      "general",
+      "vietnam",
+      "international",
+      "ai",
+      "technology",
+      "business",
+      "finance",
+      "entertainment",
+      "celebrity",
+      "lifestyle",
+      "science",
+      "education",
+      "social",
+      "discovery",
+      "human_interest",
+      "internet_culture"
+    ],
+    "auto_discover": false,
+    "discover_interval_minutes": 90,
+    "llm_editorial": true
+  },
+  "facebook": {
+    "enabled": false,
+    "page_ids": []
+  },
+  "research": {
+    "max_articles": 6,
+    "min_sources": 2,
+    "max_chars_per_article": 5000,
+    "fetch_timeout_seconds": 25,
+    "max_concurrency": 5,
+    "respect_robots": true,
+    "search_more_sources": true
+  },
+  "pipeline": {
+    "auto_image": true,
+    "image_variations": 1,
+    "auto_research_on_discover": false,
+    "workers": 2
+  },
+  "resource": {
+    "serialize_gpu": true,
+    "unload_ollama_before_image": true,
+    "free_comfy_before_llm": false,
+    "min_free_vram_mb": 1500,
+    "gpu_wait_seconds": 45
+  }
+}
