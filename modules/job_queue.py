@@ -13,7 +13,10 @@ from .errors import CancelledError
 from .pipeline import Pipeline, pipeline as default_pipeline
 from .utils import parse_datetime, truncate, utcnow, utcnow_iso
 
-JOB_KINDS = ("discover", "research", "write", "image", "full", "batch")
+JOB_KINDS = (
+    "discover", "research", "write", "image", "full", "batch",
+    "versions", "assess_image",
+)
 
 
 class JobQueue:

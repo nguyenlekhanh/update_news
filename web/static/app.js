@@ -33,7 +33,13 @@ const state = {
   logs: [],
   jobsPolling: false,
   focusTopic: null,
-  savingSettings: false
+  savingSettings: false,
+  calendar: null,
+  report: null,
+  reportKind: 'daily_trend',
+  learning: null,
+  imageStudio: null,
+  metricsAnalysis: null
 };
 
 /* --------------------------------------------------------------- utilities */
@@ -255,6 +261,12 @@ function summarizeJob(job) {
       return result.headline || (job.message || '');
     case 'write':
       return result.headline || (job.message || '');
+    case 'versions':
+      return fill(t('toast.versionsReady'), { n: (result.versions || []).length });
+    case 'assess_image':
+      return (result.relevance && typeof result.relevance.score === 'number')
+        ? `${t('quality.image')}: ${Math.round(result.relevance.score)}/100`
+        : (job.message || 'OK');
     default:
       return job.message || 'OK';
   }
@@ -351,6 +363,12 @@ function renderTopActions() {
     jobs: [
       { action: 'refresh-jobs', label: t('common.refresh'), kind: 'ghost' }
     ],
+    calendar: [
+      { action: 'calendar-refresh', label: t('common.refresh'), kind: 'ghost' }
+    ],
+    reports: [
+      { action: 'report-export', label: t('reports.export'), kind: 'ghost' }
+    ],
     settings: [
       { action: 'save-settings', label: t('common.save'), kind: 'primary' }
     ]
@@ -377,6 +395,9 @@ async function refreshCurrentView() {
     if (state.view === 'dashboard') await loadDashboard();
     else if (state.view === 'trends') await loadTrends();
     else if (state.view === 'posts') await loadPosts();
+    else if (state.view === 'analytics') await loadAnalytics();
+    else if (state.view === 'calendar') await loadCalendar();
+    else if (state.view === 'reports') await loadReports();
     else if (state.view === 'jobs') await loadJobs();
     else if (state.view === 'settings') await loadSettings();
   } catch (err) {
@@ -386,15 +407,39 @@ async function refreshCurrentView() {
 
 /* --------------------------------------------------------------- dashboard */
 async function loadDashboard() {
-  const [stats, trends] = await Promise.all([
+  const [stats, trends, calendar] = await Promise.all([
     api('/api/stats'),
-    api('/api/trends?limit=6')
+    api('/api/trends?limit=6'),
+    api('/api/calendar?days=7').catch(() => null)
   ]);
   state.stats = stats;
+  state.calendar = calendar;
   renderStatCards();
   renderServiceCards();
   renderRecentJobs();
   renderDashboardTrends(trends.items || []);
+  renderDashboardReminders();
+}
+
+function renderDashboardReminders() {
+  const host = $('#dashboardReminders');
+  if (!host) return;
+  const reminders = (state.calendar || {}).reminders || {};
+  const pending = reminders.pending_approval || [];
+  const overdue = reminders.overdue || [];
+  if (!pending.length && !overdue.length) {
+    host.innerHTML = `<div class="empty-state">${esc(t('calendar.none'))}</div>`;
+    return;
+  }
+  host.innerHTML = `
+    <div class="mini-row">
+      <span class="chip warn">${esc(fill(t('calendar.pending'), { n: pending.length }))}</span>
+      <span class="chip danger">${esc(fill(t('calendar.overdue'), { n: overdue.length }))}</span>
+    </div>` + pending.slice(0, 4).map(post => `
+      <div class="mini-row">
+        <span class="grow">${esc(String(post.headline || '').slice(0, 64))}</span>
+        <span class="time">${esc(fmtDate(post.created_at))}</span>
+      </div>`).join('');
 }
 
 function renderStatCards() {
@@ -550,6 +595,10 @@ function renderTrends() {
             <span class="chip">${esc(t('cat.' + (topic.category || 'general')))}</span>
             <span class="chip">${esc(fill(t('trends.sources'), { n: topic.source_count || 0 }))}</span>
             <span class="chip ${esc(topic.status)}">${esc(t('topicStatus.' + (topic.status || 'new')))}</span>
+            ${phaseChip(topic)}
+            ${viralChip(topic)}
+            ${predictionChips(topic)}
+            ${sparkline((topic.intelligence || {}).history, { width: 88, height: 26 })}
             ${topic.last_seen_at ? `<span class="muted" style="font-size:11px">${esc(timeAgo(topic.last_seen_at))}</span>` : ''}
           </div>
           <h3 class="trend-title">${esc(topic.title)}</h3>
@@ -610,6 +659,9 @@ async function openTrendDetail(topicId) {
     body: `
       <div class="settings-subhead">${esc(t('trends.articles'))}</div>
       <div class="source-list">${articleRows}</div>
+      ${intelligenceBlock(topic)}
+      ${predictionBlock(topic)}
+      ${strategyBlock(topic)}
       ${researchBlock}
       ${topic.primary_url ? `<p style="margin-top:14px"><a href="${esc(topic.primary_url)}" target="_blank" rel="noopener noreferrer">${esc(t('common.open'))} ↗</a></p>` : ''}
     `,
@@ -724,6 +776,7 @@ function renderPostList() {
         <span class="post-item-meta">
           <span class="chip ${esc(post.status)}">${esc(t('postStatus.' + post.status))}</span>
           <span>${esc(post.topic_title ? post.topic_title.slice(0, 46) : '')}</span>
+          ${post.status === 'draft' ? `<button class="btn ghost sm quick-approve" data-action="approve-post" data-id="${post.id}" title="${esc(t('post.approve'))}">✓ ${esc(t('post.approve'))}</button>` : ''}
         </span>
       </div>
     </div>`;
@@ -784,17 +837,65 @@ function renderEditor() {
     ? flags.map(flag => `<div class="flag ${flag.severity === 'info' ? 'info' : ''}">${esc(flag.detail || flag.type)}</div>`).join('')
     : `<div class="muted" style="font-size:12px">${esc(t('post.noFlags'))}</div>`;
 
-  const gallery = images.length ? images.map(image => `
+  const gallery = images.length ? images.map(image => {
+    const checks = (image.meta && image.meta.checks) || null;
+    return `
     <div class="gallery-item ${image.selected ? 'is-selected' : ''}">
       <span class="ai-tag">AI</span>
+      ${image.meta && image.meta.relevance
+        ? `<span class="relevance-badge ${image.meta.relevance.score < 50 ? 'low' : ''}" title="${esc(image.meta.relevance.note || '')}">${Math.round(image.meta.relevance.score)}/100</span>`
+        : ''}
+      ${checks ? `<span class="check-badge ${esc(checks.verdict || 'review')}" title="${esc(t('imageStudio.score'))}: ${Math.round(checks.score)} · ${esc(t('imageStudio.verdict'))}: ${esc(t('imgVerdict.' + (checks.verdict || 'review')))}">✓ ${Math.round(checks.score)}</span>` : ''}
       <img src="${esc(image.url)}" alt="${esc(image.prompt || '')}" loading="lazy">
       <div class="gallery-actions">
         <button class="btn ghost sm" data-action="select-image" data-id="${post.id}" data-image-id="${image.id}">
           ${esc(image.selected ? t('post.selectedImage') : t('post.selectImage'))}
         </button>
+        <button class="btn ghost sm" data-action="image-check" data-id="${post.id}" data-image-id="${image.id}" title="${esc(t('imageStudio.check'))}">◎</button>
         <a class="btn ghost sm" href="${esc(image.url)}" target="_blank" rel="noopener noreferrer" title="${esc(t('common.open'))}">↗</a>
       </div>
-    </div>`).join('') : `<div class="gallery-empty">${esc(t('post.noImages'))}</div>`;
+    </div>`;
+  }).join('') : `<div class="gallery-empty">${esc(t('post.noImages'))}</div>`;
+
+  const imageOptions = imageStudioOptions();
+  const recommendation = post.image_recommendation || {};
+  const imageControls = `
+    <div class="inline-controls">
+      <label class="field-inline">
+        <span>${esc(t('imageStudio.style'))}</span>
+        <select id="imageStyle">
+          <option value="auto">${esc(t('imageStudio.auto'))}</option>
+          ${imageOptions.styles.map(item => `<option value="${esc(item.key)}">${esc(t('imgStyle.' + item.key))}</option>`).join('')}
+        </select>
+      </label>
+      <label class="field-inline">
+        <span>${esc(t('imageStudio.aspect'))}</span>
+        <select id="imageAspect">
+          ${imageOptions.aspects.map(item => `<option value="${esc(item.key)}" ${item.key === (imageOptions.default_aspect || '1:1') ? 'selected' : ''}>${esc(t('imageStudio.aspect'))} ${esc(item.key)}</option>`).join('')}
+        </select>
+      </label>
+      ${recommendation.style ? `<span class="hint">${esc(t('imageStudio.recommended'))}: ${esc(t('imgStyle.' + recommendation.style))} · ${esc(recommendation.aspect || '1:1')}</span>` : ''}
+    </div>`;
+
+  const metrics = post.metrics || [];
+  const metricTotals = metrics.reduce((acc, row) => {
+    ['reach', 'engagement', 'reactions', 'comments', 'shares', 'link_clicks'].forEach(key => {
+      acc[key] = (acc[key] || 0) + Number(row[key] || 0);
+    });
+    return acc;
+  }, {});
+  const metricsPanel = `
+    <div class="settings-subhead">${esc(t('fb.title'))}</div>
+    ${metrics.length ? `<div class="metric-grid">
+      ${[['fb.reach', 'reach'], ['fb.engagement', 'engagement'], ['fb.reactions', 'reactions'],
+         ['fb.comments', 'comments'], ['fb.shares', 'shares'], ['fb.clicks', 'link_clicks']]
+        .map(([labelKey, key]) => `<div class="metric-box"><span class="k">${esc(t(labelKey))}</span><span class="v">${fmtNum(metricTotals[key] || 0)}</span></div>`).join('')}
+    </div>` : `<div class="muted" style="font-size:12px">${esc(t('fb.noData'))}</div>`}
+    <div class="inline-actions" style="margin-top:8px">
+      <button class="btn ghost sm" data-action="import-metrics" data-id="${post.id}">${esc(t('fb.import'))}</button>
+      <button class="btn ghost sm" data-action="fetch-metrics" data-id="${post.id}">${esc(t('fb.fetch'))}</button>
+    </div>
+    <p class="hint">${esc(t('fb.disclaimer'))}</p>`;
 
   host.innerHTML = `
     <div class="editor-head">
@@ -815,9 +916,13 @@ function renderEditor() {
       <button class="btn danger" data-action="reject-post" data-id="${post.id}">${esc(t('post.reject'))}</button>
       <button class="btn ghost" data-action="regen-text" data-id="${post.id}">${esc(t('post.regenerateText'))}</button>
       <button class="btn ghost" data-action="gen-image" data-id="${post.id}">${esc(t('post.generateImage'))}</button>
+      ${topic.id ? `<button class="btn ghost" data-action="versions-compare" data-id="${topic.id}">${esc(t('versions.compare'))}</button>` : ''}
       <button class="btn ghost" data-action="export-post" data-id="${post.id}">${esc(t('post.export'))}</button>
       <button class="btn ghost" data-action="delete-post" data-id="${post.id}">${esc(t('post.delete'))}</button>
     </div>
+    ${qualityPanel(post.quality)}
+    ${strategyPanel(post)}
+    ${learningPanel(post)}
 
     <div class="field">
       <label for="edHeadline">${esc(t('post.headline'))}</label>
@@ -860,8 +965,20 @@ function renderEditor() {
     </details>
 
     <div class="settings-subhead">${esc(t('post.images'))}</div>
+    ${imageControls}
     <div class="gallery">${gallery}</div>
+    <div class="inline-actions" style="margin-top:8px">
+      ${[1, 2, 3].map(count => `<button class="btn ghost sm" data-action="gen-image-quick" data-id="${post.id}" data-count="${count}">${esc(fill(t('post.quickImages'), { n: count }))}</button>`).join('')}
+      ${images.length ? `<button class="btn ghost sm" data-action="assess-image" data-id="${post.id}">${esc(t('quality.assessImage'))}</button>` : ''}
+    </div>
     <p class="hint">${esc(t('post.aiDisclaimer'))}</p>
+    ${metricsPanel}
+
+    <div class="settings-subhead">${esc(t('versions.title'))}</div>
+    ${topic.id ? `<div class="inline-actions">
+      <button class="btn ghost sm" data-action="versions-generate" data-id="${topic.id}">${esc(t('versions.generate'))}</button>
+      <button class="btn ghost sm" data-action="versions-compare" data-id="${topic.id}">${esc(t('versions.compare'))}</button>
+    </div>` : `<div class="muted" style="font-size:12px">${esc(t('versions.none'))}</div>`}
 
     <div class="settings-subhead">${esc(t('post.research'))}</div>
     ${report ? `
@@ -991,8 +1108,9 @@ async function showJobDetail(jobId) {
 
 /* ---------------------------------------------------------------- settings */
 async function loadSettings() {
-  const [settingsResponse, sourcesResponse, health, workflows] = await Promise.all([
-    api('/api/settings'), api('/api/sources'), api('/api/health'), api('/api/comfyui/workflows')
+  const [settingsResponse, sourcesResponse, health, workflows, learningResponse] = await Promise.all([
+    api('/api/settings'), api('/api/sources'), api('/api/health'),
+    api('/api/comfyui/workflows'), api('/api/learning').catch(() => null)
   ]);
   state.settings = settingsResponse.settings;
   state.secrets = settingsResponse.secrets;
@@ -1001,6 +1119,7 @@ async function loadSettings() {
   state.workflows = workflows.items || [];
   state.sources = sourcesResponse.items || [];
   state.sourceMeta = sourcesResponse;
+  state.learning = learningResponse;
   renderSettings();
 }
 
@@ -1126,15 +1245,68 @@ function renderSettings() {
     settingRow('research.respect_robots', 'fields.robots', { type: 'bool' })
   ].join('');
 
+  const qualityBody = [
+    settingRow('quality.vision_model', 'fields.visionModel', { type: 'text' }),
+    settingRow('quality.auto_assess_images', 'fields.autoAssess', { type: 'bool' })
+  ].join('');
+
   const pipelineBody = [
     settingRow('pipeline.workers', 'fields.workers', { type: 'number', min: 1, max: 6 }),
     settingRow('pipeline.auto_image', 'fields.autoImage', { type: 'bool' }),
-    settingRow('pipeline.image_variations', 'fields.imageVariations', { type: 'number', min: 1, max: 4 }),
+    settingRow('pipeline.image_variations', 'fields.imageVariations', { type: 'number', min: 1, max: 3 }),
     settingRow('resource.serialize_gpu', 'fields.serializeGpu', { type: 'bool' }),
     settingRow('resource.unload_ollama_before_image', 'fields.unloadOllama', { type: 'bool' }),
     settingRow('resource.free_comfy_before_llm', 'fields.freeComfy', { type: 'bool' }),
     settingRow('resource.min_free_vram_mb', 'fields.minVram', { type: 'number', min: 512, max: 12000, step: 256 }),
-    settingRow('resource.gpu_wait_seconds', 'fields.waitSeconds', { type: 'number', min: 5, max: 300 })
+    settingRow('resource.gpu_wait_seconds', 'fields.waitSeconds', { type: 'number', min: 5, max: 300 }),
+    settingRow('resource.max_concurrent_image_jobs', 'fields.maxImageJobs', { type: 'number', min: 1, max: 4 })
+  ].join('');
+
+  const studioOptions = imageStudioOptions();
+  const strategyBody = [
+    settingRow('strategy.enabled', 'fields.enabled', { type: 'bool' }),
+    settingRow('strategy.apply_to_writing', 'fields.applyStrategy', { type: 'bool' }),
+    settingRow('strategy.allow_override', 'fields.allowOverride', { type: 'bool' })
+  ].join('');
+
+  const learningBody = [
+    settingRow('learning.enabled', 'fields.enabled', { type: 'bool' }),
+    settingRow('learning.use_in_prompts', 'fields.learningInPrompts', { type: 'bool' }),
+    settingRow('learning.min_samples', 'fields.minSamples', { type: 'number', min: 1, max: 50 }),
+    `<div class="settings-subhead">${esc(t('learning.title'))}</div>`,
+    `<div id="learningSummary" class="learning-summary"></div>`,
+    `<div class="settings-foot"><button class="btn danger sm" data-action="learning-reset">${esc(t('learning.reset'))}</button></div>`
+  ].join('');
+
+  const imagesBody = [
+    settingRow('images.style', 'fields.imageStyle', {
+      type: 'select',
+      options: [{ value: 'auto', label: t('imageStudio.auto') },
+        ...studioOptions.styles.map(item => ({ value: item.key, label: t('imgStyle.' + item.key) }))]
+    }),
+    settingRow('images.aspect', 'fields.aspect', {
+      type: 'select', options: studioOptions.aspects.map(item => ({ value: item.key, label: item.key }))
+    }),
+    settingRow('images.detect_duplicates', 'fields.detectDuplicates', { type: 'bool' }),
+    settingRow('images.text_risk_check', 'fields.textCheck', { type: 'bool' }),
+    settingRow('images.min_short_side', 'fields.minShortSide', { type: 'number', min: 256, max: 2048, step: 64 })
+  ].join('');
+
+  const calendarBody = [
+    settingRow('calendar.enabled', 'fields.enabled', { type: 'bool' }),
+    settingRow('calendar.days', 'fields.calendarDays', { type: 'list' }),
+    settingRow('calendar.time_windows', 'fields.timeWindows', { type: 'list' }),
+    settingRow('calendar.max_per_day', 'fields.maxPerDay', { type: 'number', min: 1, max: 6 }),
+    settingRow('calendar.categories', 'fields.category', { type: 'list' }),
+    settingRow('calendar.reminder_hours', 'fields.reminderHours', { type: 'number', min: 1, max: 168 }),
+    settingRow('calendar.utc_offset_hours', 'fields.offset', { type: 'number', min: -12, max: 14 })
+  ].join('');
+
+  const facebookMetricsBody = [
+    settingRow('facebook_metrics.enabled', 'fields.metricsEnabled', { type: 'bool' }),
+    settingRow('facebook_metrics.graph_version', 'fields.graphVersion'),
+    settingRow('facebook_metrics.utc_offset_hours', 'fields.offset', { type: 'number', min: -12, max: 14 }),
+    `<p class="hint">${esc(t('fb.disclaimer'))}</p>`
   ].join('');
 
   const facebook = (state.sourceMeta && state.sourceMeta.facebook) || {};
@@ -1174,11 +1346,46 @@ function renderSettings() {
     ${settingsPanel('settings.writer', 'settings.writerDesc', writerBody)}
     ${settingsPanel('settings.trends', 'settings.trendsDesc', trendsBody)}
     ${settingsPanel('settings.research', 'settings.researchDesc', researchBody)}
+    ${settingsPanel('settings.strategy', 'settings.strategyDesc', strategyBody)}
+    ${settingsPanel('settings.learning', 'settings.learningDesc', learningBody)}
+    ${settingsPanel('settings.images', 'settings.imagesDesc', imagesBody)}
+    ${settingsPanel('settings.calendar', 'settings.calendarDesc', calendarBody)}
+    ${settingsPanel('settings.facebookMetrics', 'settings.facebookMetricsDesc', facebookMetricsBody)}
     ${settingsPanel('settings.pipeline', 'settings.pipelineDesc', pipelineBody)}
+    ${settingsPanel('settings.quality', 'settings.qualityDesc', qualityBody)}
     ${settingsPanel('settings.sources', 'settings.sourcesDesc', sourcesBody)}
     ${settingsPanel('settings.data', 'settings.dataDesc', dataBody)}
   </div>`;
   renderSourcesTable();
+  renderLearningSummary();
+}
+
+function renderLearningSummary() {
+  const host = $('#learningSummary');
+  if (!host) return;
+  const learning = state.learning || {};
+  if (!learning.samples) {
+    host.innerHTML = `<div class="muted" style="font-size:12px">${esc(t('learning.none'))}</div>`;
+    return;
+  }
+  const counts = learning.counts || {};
+  const preferred = (learning.styles || []).filter(row => row.approval_rate !== null).slice(0, 3);
+  const edits = learning.edit_behaviour || {};
+  const percent = value => Math.round((value || 0) * 100);
+  host.innerHTML = `
+    <div class="meta-grid">
+      <div class="meta-box"><div class="k">${esc(t('learning.samples'))}</div>
+        <div class="v">${fmtNum(learning.samples)}</div></div>
+      <div class="meta-box"><div class="k">${esc(t('learning.preferred'))}</div>
+        <div class="v">${preferred.length
+          ? preferred.map(row => `${esc(t('writerStyle.' + row.key))} (${Math.round(row.approval_rate)}%)`).join(', ')
+          : '—'}</div></div>
+      <div class="meta-box"><div class="k">${esc(t('learning.edits'))}</div>
+        <div class="v">${esc(fill(t('learning.editRate'), { h: percent(edits.headline_change), b: percent(edits.body_change) }))}</div></div>
+    </div>
+    <div class="muted" style="font-size:12px">
+      ${esc(fill(t('learning.counts'), { a: counts.approve || 0, b: counts.reject || 0, c: counts.edit || 0 }))}
+    </div>`;
 }
 
 function renderSourcesTable() {
@@ -1332,6 +1539,753 @@ async function streamOllama(prompt, output) {
   }
 }
 
+/* ----------------------------------------------------------- viral / quality */
+function phaseChip(topic) {
+  const intel = topic.intelligence || {};
+  const phase = intel.phase || topic.phase || 'unknown';
+  const delta = intel.score_delta;
+  const deltaText = (delta === null || delta === undefined) ? '' : ` ${delta > 0 ? '+' : ''}${delta}`;
+  return `<span class="chip phase phase-${esc(phase)}" title="${esc(intel.phase_reason || t('phase.tooltip'))}">${esc(t('phase.' + phase))}${esc(deltaText)}</span>`;
+}
+
+function viralChip(topic) {
+  const intel = topic.intelligence || {};
+  const viral = topic.viral || intel.viral || {};
+  const label = viral.label || 'insufficient';
+  return `<span class="chip viral viral-${esc(label)}" title="${esc(viral.explanation || '')}">${esc(t('viral.' + label))}</span>`;
+}
+
+function sparkline(points, options = {}) {
+  const values = (points || []).map(point => Number(point.score)).filter(value => Number.isFinite(value));
+  if (values.length < 2) return '';
+  const width = options.width || 120;
+  const height = options.height || 32;
+  const pad = 4;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = max - min || 1;
+  const stepX = (width - pad * 2) / (values.length - 1);
+  const coords = values.map((value, index) => [
+    pad + index * stepX,
+    height - pad - ((value - min) / span) * (height - pad * 2)
+  ]);
+  const path = coords.map(([x, y], index) => `${index ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join(' ');
+  const last = coords[coords.length - 1];
+  const rising = values[values.length - 1] >= values[0];
+  return `<svg class="sparkline ${rising ? 'up' : 'down'}" viewBox="0 0 ${width} ${height}" width="${width}" height="${height}" role="img" aria-label="score history">
+    <path d="${path}" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" stroke-linecap="round"/>
+    <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.3" fill="currentColor"/>
+  </svg>`;
+}
+
+function intelligenceBlock(topic) {
+  const intel = topic.intelligence || {};
+  if (!intel.phase && !intel.viral) return '';
+  const viral = intel.viral || {};
+  const history = intel.history || [];
+  const signals = (viral.verified_signals || []).map(item => `<li>${esc(item.detail || '')}</li>`).join('');
+  const missing = (viral.missing_signals || []).map(item => `<li>${esc(item)}</li>`).join('');
+  return `
+    <div class="settings-subhead">${esc(t('viral.title'))}</div>
+    <div class="meta-grid">
+      <div class="meta-box"><div class="k">${esc(t('phase.' + (intel.phase || 'unknown')))}</div>
+        <div class="v">${esc(intel.phase_reason || '')}</div></div>
+      <div class="meta-box"><div class="k">${esc(t('viral.score'))}</div>
+        <div class="v">${Math.round(viral.score || 0)}/100 · ${esc(t('viral.' + (viral.label || 'insufficient')))}</div></div>
+      <div class="meta-box"><div class="k">${esc(t('viral.freshness'))}</div>
+        <div class="v">${intel.freshness_hours === null || intel.freshness_hours === undefined ? '—' : esc(fill(t('viral.hoursAgo'), { n: intel.freshness_hours }))}</div></div>
+    </div>
+    <p class="rationale">${esc(viral.explanation || '')}</p>
+    <div class="meta-grid">
+      <div class="meta-box"><div class="k">${esc(t('viral.verified'))}</div>
+        <div class="v"><ul class="quality-list">${signals || `<li>${esc(t('common.none'))}</li>`}</ul></div></div>
+      <div class="meta-box"><div class="k">${esc(t('viral.missing'))}</div>
+        <div class="v"><ul class="quality-list">${missing || `<li>${esc(t('common.none'))}</li>`}</ul></div></div>
+    </div>
+    <div class="settings-subhead">${esc(t('viral.history'))}</div>
+    <div class="history-chart">${sparkline(history, { width: 520, height: 90 }) || `<span class="muted">${esc(t('viral.insufficient'))}</span>`}</div>
+    <p class="hint">${esc(viral.disclaimer || '')}</p>`;
+}
+
+function qualityPanel(quality) {
+  if (!quality) return '';
+  const components = quality.components || {};
+  const order = [
+    ['quality.source', 'source_reliability'],
+    ['quality.factCheck', 'fact_check'],
+    ['quality.content', 'content'],
+    ['quality.image', 'image'],
+    ['quality.freshness', 'freshness']
+  ];
+  const rows = order.map(([labelKey, key]) => {
+    const component = components[key] || {};
+    const score = component.score;
+    const width = score === null || score === undefined ? 0 : Math.max(0, Math.min(100, score));
+    return `<div class="quality-row">
+      <span class="q-label">${esc(t(labelKey))}</span>
+      <span class="q-bar"><span style="width:${width}%"></span></span>
+      <span class="q-value">${score === null || score === undefined ? '—' : Math.round(score)}</span>
+      <span class="chip ${esc(component.kind || 'estimated')}">${esc(t('kind.' + (component.kind || 'estimated')))}</span>
+      <span class="q-detail">${esc(component.detail || '')}</span>
+    </div>`;
+  }).join('');
+  const reasons = (quality.verdict_reasons || []).map(reason => `<li>${esc(reason)}</li>`).join('');
+  const unsupported = (quality.unsupported_claims || []).map(claim => `<li>${esc(claim.claim || '')}</li>`).join('');
+  return `
+    <div class="quality-panel">
+      <div class="quality-head">
+        <span class="quality-score ${esc(quality.verdict || '')}">${quality.overall === null || quality.overall === undefined ? '—' : Math.round(quality.overall)}</span>
+        <div>
+          <strong>${esc(t('quality.title'))}</strong>
+          <div class="muted" style="font-size:12px">${esc(t('quality.coverage'))}: ${Math.round((quality.coverage || 0) * 100)}%</div>
+        </div>
+        <span class="chip verdict-${esc(quality.verdict || 'review')}">${esc(t('quality.' + (quality.verdict || 'review')))}</span>
+      </div>
+      <div class="quality-rows">${rows}</div>
+      ${reasons ? `<div class="settings-subhead">${esc(t('quality.warnings'))}</div><ul class="quality-list">${reasons}</ul>` : ''}
+      ${unsupported ? `<div class="settings-subhead">${esc(t('quality.unsupported'))}</div><ul class="quality-list">${unsupported}</ul>` : ''}
+    </div>`;
+}
+
+/* ------------------------------------------------ prediction / strategy */
+function momentumSpeed(momentum) {
+  if (momentum.per_6h !== null && momentum.per_6h !== undefined) {
+    return `${momentum.per_6h > 0 ? '+' : ''}${momentum.per_6h}/6h`;
+  }
+  if (momentum.per_run !== null && momentum.per_run !== undefined) {
+    return `${momentum.per_run > 0 ? '+' : ''}${momentum.per_run}/${t('prediction.perRun')}`;
+  }
+  return '';
+}
+
+function momentumChip(topic) {
+  const momentum = ((topic.prediction || {}).momentum) || {};
+  if (!momentum.label) return '';
+  const speed = momentumSpeed(momentum);
+  return `<span class="chip momentum momentum-${esc(momentum.label)}" title="${esc(momentum.reason || '')}">${esc(t('momentum.' + momentum.label))}${speed ? ' ' + esc(speed) : ''}</span>`;
+}
+
+function predictionChips(topic) {
+  const pred = topic.prediction || {};
+  const confidence = pred.confidence || {};
+  const opportunity = pred.opportunity || {};
+  if (!pred.momentum) return '';
+  return [
+    momentumChip(topic),
+    confidence.value !== null && confidence.value !== undefined
+      ? `<span class="chip conf" title="${esc(confidence.reason || '')}">${esc(t('prediction.confidence'))} ${Math.round(confidence.value)}%</span>`
+      : '',
+    opportunity.score !== null && opportunity.score !== undefined
+      ? `<span class="chip opp opp-${esc(opportunity.label || '')}" title="${esc(opportunity.reason || '')}">${esc(t('prediction.opportunity'))} ${Math.round(opportunity.score)}</span>`
+      : ''
+  ].filter(Boolean).join(' ');
+}
+
+function predictionBlock(topic) {
+  const pred = topic.prediction || {};
+  const momentum = pred.momentum || {};
+  if (!momentum.label) return '';
+  const confidence = pred.confidence || {};
+  const opportunity = pred.opportunity || {};
+  const forecast = pred.forecast || {};
+  const compare = pred.history || {};
+  const change = pred.score_change;
+  const changeText = change === null || change === undefined
+    ? '—' : `${change > 0 ? '+' : ''}${change}`;
+  const forecastText = forecast.available
+    ? `${Math.round(forecast.next_score)} · ${esc(t('prediction.' + (forecast.direction || 'flat')))}
+       <span class="muted">(${esc(fill(t('prediction.windowValue'), { n: forecast.horizon_hours }))})</span>`
+    : `<span class="muted">${esc(t('prediction.noForecast'))}</span>`;
+  const factors = (confidence.factors || []).map(factor =>
+    `<li>${esc(factor.detail || '')}</li>`).join('');
+  return `
+    <div class="settings-subhead">${esc(t('prediction.title'))}</div>
+    <div class="prediction-grid">
+      <div class="prediction-card">
+        <span class="k">${esc(t('prediction.current'))}</span>
+        <span class="v">${pred.current_score === null || pred.current_score === undefined ? '—' : Math.round(pred.current_score)}</span>
+        <span class="muted">${esc(t('prediction.previous'))}: ${pred.previous_score === null || pred.previous_score === undefined ? '—' : Math.round(pred.previous_score)} · ${esc(t('prediction.change'))}: ${esc(changeText)}</span>
+      </div>
+      <div class="prediction-card">
+        <span class="k">${esc(t('prediction.momentum'))}</span>
+        <span class="v"><span class="chip momentum momentum-${esc(momentum.label)}">${esc(t('momentum.' + momentum.label))}</span></span>
+        <span class="muted">${esc(momentumSpeed(momentum) || '—')} · ${esc(fill(t('prediction.snapshots'), { n: momentum.snapshots || 0 }))}</span>
+      </div>
+      <div class="prediction-card">
+        <span class="k">${esc(t('prediction.confidence'))}</span>
+        <span class="v">${Math.round(confidence.value || 0)}%</span>
+        <span class="muted">${esc(t('confidence.' + (confidence.label || 'low')))}</span>
+      </div>
+      <div class="prediction-card">
+        <span class="k">${esc(t('prediction.opportunity'))}</span>
+        <span class="v">${Math.round(opportunity.score || 0)}</span>
+        <span class="muted">${esc(t('prediction.window'))}: ${esc(fill(t('prediction.windowValue'), { n: opportunity.publish_window_hours || 24 }))}</span>
+      </div>
+      <div class="prediction-card">
+        <span class="k">${esc(t('prediction.forecast'))}</span>
+        <span class="v">${forecast.available ? Math.round(forecast.next_score) : '—'}</span>
+        <span class="muted">${forecastText}</span>
+      </div>
+      <div class="prediction-card">
+        <span class="k">${esc(t('prediction.vsPeak'))}</span>
+        <span class="v">${compare.current_vs_peak === null || compare.current_vs_peak === undefined ? '—' : `${compare.current_vs_peak > 0 ? '+' : ''}${compare.current_vs_peak}`}</span>
+        <span class="muted">${esc(t('prediction.runs'))}: ${compare.runs || 0} · ${esc(t('prediction.phase'))}: ${esc(t('phase.' + ((pred.lifecycle || {}).phase || 'unknown')))}</span>
+      </div>
+    </div>
+    ${factors ? `<details class="metrics"><summary>${esc(t('prediction.confidence'))}</summary><ul class="quality-list">${factors}</ul></details>` : ''}
+    <p class="hint">${esc(pred.disclaimer || '')}</p>`;
+}
+
+function strategyBlock(topic) {
+  const resolved = (topic || {}).strategy || null;
+  if (!resolved || !resolved.effective_key) return '';
+  const options = ((state.system || {}).options || {}).strategies || [];
+  const effective = resolved.effective_key;
+  const list = items => (items || []).map(item => `<li>${esc(item)}</li>`).join('');
+  return `
+    <div class="settings-subhead">${esc(t('strategy.title'))}</div>
+    <div class="strategy-panel">
+      <div class="strategy-head">
+        <div>
+          <strong>${esc(t('strategyKind.' + effective))}</strong>
+          <div class="muted" style="font-size:12px">
+            ${esc(resolved.is_override ? t('strategy.isOverride') : t('strategy.recommended'))}
+            · ${esc(t('strategy.engine'))}
+          </div>
+        </div>
+        <span class="chip strategy-chip">${esc(t('strategyKind.' + effective))}</span>
+      </div>
+      <p class="rationale">${esc(resolved.summary || '')}</p>
+      ${(resolved.reasons || []).length ? `<ul class="quality-list">${list(resolved.reasons)}</ul>` : ''}
+      <div class="strategy-columns">
+        <div><span class="k">${esc(t('strategy.keyPoints'))}</span><ul>${list(resolved.key_points)}</ul></div>
+        <div><span class="k">${esc(t('strategy.avoid'))}</span><ul>${list(resolved.avoid)}</ul></div>
+        <div><span class="k">${esc(t('strategy.checklist'))}</span><ul>${list(resolved.checklist)}</ul></div>
+      </div>
+      <div class="inline-controls">
+        <label class="field-inline">
+          <span>${esc(t('strategy.override'))}</span>
+          <select id="trendStrategySelect">
+            ${options.map(item => `<option value="${esc(item.key)}" ${item.key === effective ? 'selected' : ''}>${esc(t('strategyKind.' + item.key))}</option>`).join('')}
+          </select>
+        </label>
+        <input id="trendStrategyNote" type="text" placeholder="${esc(t('strategy.note'))}" value="${esc(resolved.override_note || '')}">
+        <button class="btn ghost sm" data-action="trend-strategy-save" data-id="${topic.id}">${esc(t('strategy.apply'))}</button>
+        <button class="btn ghost sm" data-action="trend-strategy-reset" data-id="${topic.id}">${esc(t('strategy.reset'))}</button>
+      </div>
+      <p class="hint">${esc(resolved.disclaimer || '')}</p>
+    </div>`;
+}
+
+function strategyPanel(post) {
+  const strategy = post.strategy || null;
+  if (!strategy || !strategy.effective_key) return '';
+  const options = ((state.system || {}).options || {}).strategies || [];
+  const effective = strategy.effective_key;
+  const list = items => (items || []).map(item => `<li>${esc(item)}</li>`).join('');
+  return `
+    <div class="strategy-panel">
+      <div class="strategy-head">
+        <div>
+          <strong>${esc(t('strategy.title'))}</strong>
+          <div class="muted" style="font-size:12px">
+            ${esc(strategy.is_override ? t('strategy.isOverride') : t('strategy.recommended'))}
+            · ${esc(t('strategy.engine'))}
+          </div>
+        </div>
+        <span class="chip strategy-chip">${esc(t('strategyKind.' + effective))}</span>
+      </div>
+      <p class="rationale">${esc(strategy.summary || '')}</p>
+      ${(strategy.reasons || []).length ? `<ul class="quality-list">${list(strategy.reasons)}</ul>` : ''}
+      <div class="strategy-columns">
+        <div><span class="k">${esc(t('strategy.keyPoints'))}</span><ul>${list(strategy.key_points)}</ul></div>
+        <div><span class="k">${esc(t('strategy.avoid'))}</span><ul>${list(strategy.avoid)}</ul></div>
+        <div><span class="k">${esc(t('strategy.checklist'))}</span><ul>${list(strategy.checklist)}</ul></div>
+      </div>
+      <div class="inline-controls">
+        <label class="field-inline">
+          <span>${esc(t('strategy.override'))}</span>
+          <select id="strategySelect">
+            ${options.map(item => `<option value="${esc(item.key)}" ${item.key === effective ? 'selected' : ''}>${esc(t('strategyKind.' + item.key))}</option>`).join('')}
+          </select>
+        </label>
+        <input id="strategyNote" type="text" placeholder="${esc(t('strategy.note'))}" value="${esc(strategy.override_note || '')}">
+        <button class="btn ghost sm" data-action="strategy-save" data-id="${post.topic_id}">${esc(t('strategy.apply'))}</button>
+        <button class="btn ghost sm" data-action="strategy-reset" data-id="${post.topic_id}">${esc(t('strategy.reset'))}</button>
+      </div>
+      <p class="hint">${esc(strategy.disclaimer || '')}</p>
+    </div>`;
+}
+
+function learningPanel(post) {
+  return `
+    <div class="learning-panel">
+      <div class="settings-subhead">${esc(t('learning.title'))}</div>
+      <div class="inline-actions">
+        <span class="muted">${esc(t('learning.rate'))}</span>
+        ${[1, 2, 3, 4, 5].map(score =>
+          `<button class="rating-btn" data-action="rate-post" data-id="${post.id}" data-rating="${score}" title="${score}/5">${'★'.repeat(score)}</button>`).join('')}
+      </div>
+      <p class="hint">${esc(t('learning.privacy'))}</p>
+    </div>`;
+}
+
+function imageStudioOptions() {
+  const options = (state.system || {}).options || {};
+  return {
+    styles: options.image_styles || [],
+    aspects: options.aspects || [{ key: '1:1' }, { key: '4:5' }, { key: '16:9' }],
+    default_aspect: ((state.settings || {}).images || {}).aspect || '1:1'
+  };
+}
+
+/* ---------------------------------------------------------------- versions */
+async function startVersions(topicId) {
+  const data = await api(`/api/topics/${topicId}/versions`, { method: 'POST', body: {} });
+  toast(t('versions.generating'));
+  const job = await awaitJob(data.job_id, { refresh: false });
+  if (job.status !== 'done') throw new Error(job.error || t('toast.jobFailed'));
+  await openVersionsModal(topicId);
+}
+
+async function openVersionsModal(topicId) {
+  const data = await api(`/api/topics/${topicId}/versions`);
+  const versions = data.items || [];
+  const body = versions.length ? `<div class="version-grid">${versions.map(version => {
+    const words = String(version.main_post || '').split(/\s+/).filter(Boolean).length;
+    const qualityScore = Math.round(((version.quality || {}).score) || 0);
+    const flags = (version.flags || []).length;
+    return `<article class="version-card ${version.selected ? 'is-selected' : ''}">
+      <header>
+        <span class="chip variant-${esc(version.variant)}">${esc(t('versions.variant' + version.variant))}</span>
+        <span class="muted">${esc(fill(t('versions.words'), { n: words }))}</span>
+        ${version.selected ? `<span class="chip verified">${esc(t('versions.selected'))}</span>` : ''}
+      </header>
+      <h4>${esc(version.headline || '')}</h4>
+      ${version.hook ? `<p class="version-hook">${esc(version.hook)}</p>` : ''}
+      <div class="version-body">${esc(String(version.main_post || '').slice(0, 1200))}${String(version.main_post || '').length > 1200 ? '…' : ''}</div>
+      <footer>
+        <span class="chip">${esc(t('writerStyle.' + version.style))}</span>
+        <span class="muted">${esc(t('quality.content'))}: ${qualityScore}</span>
+        ${flags ? `<span class="chip warn">${flags} ⚠</span>` : ''}
+        <button class="btn primary sm" data-action="apply-version" data-id="${version.id}" data-topic-id="${topicId}">${esc(t('versions.apply'))}</button>
+      </footer>
+    </article>`;
+  }).join('')}</div>` : `<div class="empty-state">${esc(t('versions.none'))}</div>`;
+
+  openModal({
+    title: t('versions.compare'),
+    description: t('versions.note'),
+    body,
+    actions: [
+      {
+        label: t('versions.regenerate'), kind: 'ghost',
+        onClick: async () => { await startVersions(topicId); return true; }
+      },
+      { label: t('common.close'), kind: 'ghost', onClick: () => true }
+    ]
+  });
+}
+
+/* --------------------------------------------------------------- analytics */
+const ANALYTICS_SERIES = [
+  ['discovered', '#8b6cff', 'analytics.discovered'],
+  ['researched', '#22d3ee', 'analytics.researched'],
+  ['drafted', '#fbbf24', 'analytics.drafted'],
+  ['approved', '#34d399', 'analytics.approved'],
+  ['rejected', '#fb7185', 'analytics.rejected']
+];
+
+async function loadAnalytics() {
+  const days = Number(($('#analyticsDays') || {}).value || 14);
+  const data = await api(`/api/analytics?days=${days}`);
+  state.analytics = data;
+  renderAnalyticsFunnel(data);
+  renderAnalyticsChart(data);
+  renderAnalyticsCategories(data);
+  renderAnalyticsRecurring(data);
+}
+
+function renderAnalyticsFunnel(data) {
+  const host = $('#analyticsFunnel');
+  if (!host) return;
+  const funnel = data.funnel || {};
+  const confidence = data.confidence || {};
+  const cards = [
+    ['analytics.discovered', funnel.discovered, fill(t('analytics.days'), { n: data.window_days })],
+    ['analytics.researched', funnel.researched, ''],
+    ['analytics.drafted', funnel.drafted, ''],
+    ['analytics.approved', funnel.approved, ''],
+    ['analytics.rejected', funnel.rejected, ''],
+    ['analytics.confidence', confidence.average === null || confidence.average === undefined ? '—' : `${confidence.average}%`,
+      `${confidence.low || 0} low · ${confidence.moderate || 0} mid · ${confidence.high || 0} high`]
+  ];
+  host.innerHTML = cards.map(([labelKey, value, foot]) => {
+    const display = typeof value === 'number' ? fmtNum(value) : String(value === undefined ? '—' : value);
+    return `
+    <div class="stat-card">
+      <span class="stat-label">${esc(t(labelKey))}</span>
+      <span class="stat-value">${esc(display)}</span>
+      <span class="stat-foot">${esc(foot || '')}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderAnalyticsChart(data) {
+  const host = $('#analyticsChart');
+  const legend = $('#analyticsLegend');
+  if (!host) return;
+  const rows = data.series || [];
+  if (!rows.length) { host.innerHTML = `<div class="empty-state">${esc(t('analytics.noData'))}</div>`; return; }
+  const width = 760;
+  const height = 230;
+  const padL = 30;
+  const padB = 26;
+  const padT = 12;
+  const padR = 12;
+  const maxValue = Math.max(1, ...rows.flatMap(row => ANALYTICS_SERIES.map(([key]) => Number(row[key]) || 0)));
+  const x = index => padL + (index * (width - padL - padR)) / Math.max(1, rows.length - 1);
+  const y = value => height - padB - (value / maxValue) * (height - padB - padT);
+  const grid = [0, 0.25, 0.5, 0.75, 1].map(fraction => {
+    const lineY = y(maxValue * fraction);
+    return `<line x1="${padL}" y1="${lineY.toFixed(1)}" x2="${width - padR}" y2="${lineY.toFixed(1)}" class="chart-grid"/>`
+      + `<text x="4" y="${(lineY + 3).toFixed(1)}" class="chart-axis">${Math.round(maxValue * fraction)}</text>`;
+  }).join('');
+  const paths = ANALYTICS_SERIES.map(([key, color]) => {
+    const points = rows.map((row, index) => [x(index), y(Number(row[key]) || 0)]);
+    const d = points.map(([px, py], index) => `${index ? 'L' : 'M'}${px.toFixed(1)},${py.toFixed(1)}`).join(' ');
+    return `<path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round"/>`;
+  }).join('');
+  const labelStep = Math.max(1, Math.ceil(rows.length / 8));
+  const labels = rows.map((row, index) => index % labelStep === 0
+    ? `<text x="${x(index).toFixed(1)}" y="${height - 8}" class="chart-axis" text-anchor="middle">${esc(row.date.slice(5))}</text>`
+    : '').join('');
+  host.innerHTML = `<svg viewBox="0 0 ${width} ${height}" class="line-chart" role="img">${grid}${paths}${labels}</svg>`;
+  if (legend) {
+    legend.innerHTML = ANALYTICS_SERIES.map(([, color, labelKey]) =>
+      `<span class="legend-item"><span class="legend-dot" style="background:${color}"></span>${esc(t(labelKey))}</span>`).join('');
+  }
+}
+
+function renderAnalyticsCategories(data) {
+  const host = $('#analyticsCategories');
+  if (!host) return;
+  const rows = data.categories || [];
+  if (!rows.length) { host.innerHTML = `<div class="empty-state">${esc(t('analytics.noData'))}</div>`; return; }
+  host.innerHTML = `<table class="table compact">
+    <thead><tr>
+      <th>${esc(t('fields.category'))}</th>
+      <th>${esc(t('stats.topics'))}</th>
+      <th>${esc(t('analytics.drafted'))}</th>
+      <th>${esc(t('analytics.approved'))}</th>
+      <th>${esc(t('analytics.approvalRate'))}</th>
+    </tr></thead><tbody>
+    ${rows.map(row => `<tr>
+      <td>${esc(t('cat.' + (row.category || 'general')))}</td>
+      <td>${fmtNum(row.topics)}</td>
+      <td>${fmtNum(row.posts)}</td>
+      <td>${fmtNum(row.approved)}</td>
+      <td>${row.approval_rate === null || row.approval_rate === undefined ? '—' : `${row.approval_rate}%`}</td>
+    </tr>`).join('')}
+    </tbody></table>`;
+}
+
+function renderAnalyticsRecurring(data) {
+  const host = $('#analyticsRecurring');
+  if (!host) return;
+  const rows = data.recurring || [];
+  if (!rows.length) { host.innerHTML = `<div class="empty-state">${esc(t('analytics.noData'))}</div>`; return; }
+  host.innerHTML = `<table class="table compact">
+    <thead><tr>
+      <th>${esc(t('trends.title', 'Chủ đề'))}</th>
+      <th>${esc(t('analytics.appearances'))}</th>
+      <th>${esc(t('analytics.peak'))}</th>
+      <th>${esc(t('analytics.change'))}</th>
+    </tr></thead><tbody>
+    ${rows.map(row => `<tr>
+      <td><a href="#" data-action="open-trend" data-id="${row.topic_id}">${esc(String(row.title || '').slice(0, 70))}</a></td>
+      <td>${fmtNum(row.appearances)}</td>
+      <td>${Math.round(row.peak_score || 0)}</td>
+      <td class="${row.score_change >= 0 ? 'pos' : 'neg'}">${row.score_change > 0 ? '+' : ''}${row.score_change}</td>
+    </tr>`).join('')}
+    </tbody></table>`;
+}
+
+/* ---------------------------------------------------------------- calendar */
+async function loadCalendar() {
+  const days = Number(($('#calendarDays') || {}).value || 7);
+  const data = await api(`/api/calendar?days=${days}`);
+  state.calendar = data;
+  renderCalendar();
+}
+
+function barRows(rows, labelFn) {
+  if (!rows || !rows.length) return `<span class="muted">${esc(t('common.none'))}</span>`;
+  const max = Math.max(...rows.map(row => Number(row.count) || 0)) || 1;
+  return rows.map(row => `
+    <div class="bar-row">
+      <span class="bar-label">${esc(labelFn(row) || '—')}</span>
+      <span class="bar-track"><span style="width:${Math.max(4, (Number(row.count) || 0) / max * 100)}%"></span></span>
+      <span class="bar-value">${fmtNum(row.count)}</span>
+    </div>`).join('');
+}
+
+function renderCalendar() {
+  const data = state.calendar;
+  if (!data) return;
+  const config = data.config || {};
+  const meta = $('#calendarMeta');
+  if (meta) {
+    meta.textContent = `${fill(t('calendar.maxPerDay'), { n: config.max_per_day || 1 })} · ` +
+      `${(data.slots || []).length} ${t('calendar.slots').toLowerCase()}`;
+  }
+
+  const reminders = data.reminders || {};
+  const reminderHost = $('#calendarReminders');
+  if (reminderHost) {
+    reminderHost.innerHTML = `
+      <div class="reminder-row">
+        <span class="chip warn">${esc(fill(t('calendar.pending'), { n: reminders.pending_count || 0 }))}</span>
+        <span class="chip danger">${esc(fill(t('calendar.overdue'), { n: (reminders.overdue || []).length }))}</span>
+        <span class="hint">${esc(reminders.message || t('calendar.notPublisher'))}</span>
+      </div>`;
+  }
+
+  const plan = data.plan || [];
+  const planHost = $('#calendarPlan');
+  if (planHost) {
+    planHost.innerHTML = plan.length ? `<table class="table">
+      <thead><tr>
+        <th>${esc(t('calendar.post'))}</th>
+        <th>${esc(t('calendar.when'))}</th>
+        <th>${esc(t('calendar.slot'))}</th>
+        <th></th>
+      </tr></thead><tbody>${plan.map(item => `
+        <tr>
+          <td>
+            <div>${esc(item.headline || '')}</div>
+            <div class="muted" style="font-size:11px">
+              ${esc(t('cat.' + (item.category || 'general')))}
+              ${item.needs_approval ? `· <span class="chip warn">${esc(t('calendar.needsApproval'))}</span>` : ''}
+            </div>
+            <div class="muted" style="font-size:11px">${esc(item.reason || '')}</div>
+          </td>
+          <td>${esc(item.local_label || '')}</td>
+          <td>${esc(item.slot || '')}</td>
+          <td><button class="btn ghost sm" data-action="schedule-post" data-id="${item.post_id}"
+            data-scheduled="${esc(item.scheduled_at)}">${esc(t('calendar.schedule'))}</button></td>
+        </tr>`).join('')}</tbody></table>` : `<div class="empty-state">${esc(t('calendar.noPlan'))}</div>`;
+  }
+
+  const distribution = data.distribution || {};
+  const distHost = $('#calendarDistribution');
+  if (distHost) {
+    distHost.innerHTML = `
+      <div class="settings-subhead">${esc(t('calendar.byCategory'))}</div>
+      ${barRows(distribution.categories, row => t('cat.' + row.category))}
+      <div class="settings-subhead">${esc(t('calendar.byDay'))}</div>
+      ${barRows((distribution.days || []).map(row => ({ ...row, count: row.count })), row => row.date)}`;
+  }
+
+  const times = data.suggested_times || [];
+  const timeHost = $('#calendarTimes');
+  if (timeHost) {
+    timeHost.innerHTML = times.length ? times.map(item => `
+      <div class="mini-row">
+        <span class="chip">${esc(item.local_time)}</span>
+        <span class="grow">${esc(t('calendar.source.' + (item.source || 'settings')))}
+          ${item.samples ? `<span class="muted">· ${fmtNum(item.samples)}</span>` : ''}</span>
+        <span class="muted">${item.average_engagement === null || item.average_engagement === undefined ? '—' : fmtNum(item.average_engagement)}</span>
+      </div>`).join('') : `<div class="empty-state">${esc(t('common.none'))}</div>`;
+  }
+
+  const entries = data.entries || [];
+  const entryHost = $('#calendarEntries');
+  if (entryHost) {
+    entryHost.innerHTML = entries.length ? `<table class="table">
+      <thead><tr>
+        <th>${esc(t('calendar.post'))}</th>
+        <th>${esc(t('calendar.when'))}</th>
+        <th>${esc(t('jobs.status'))}</th>
+        <th>${esc(t('calendar.note'))}</th>
+        <th></th>
+      </tr></thead><tbody>${entries.map(entry => `
+        <tr>
+          <td>${esc(entry.headline || '')}</td>
+          <td>${esc(fmtDate(entry.scheduled_at))}</td>
+          <td><span class="chip ${esc(entry.post_status || 'draft')}">${esc(t('postStatus.' + (entry.post_status || 'draft')))}</span></td>
+          <td>${esc(entry.note || '')}</td>
+          <td><button class="btn danger sm" data-action="calendar-remove" data-id="${entry.id}">${esc(t('calendar.remove'))}</button></td>
+        </tr>`).join('')}</tbody></table>` : `<div class="empty-state">${esc(t('calendar.none'))}</div>`;
+  }
+
+  const unscheduled = data.unscheduled || [];
+  const unscheduledHost = $('#calendarUnscheduled');
+  if (unscheduledHost) {
+    unscheduledHost.innerHTML = unscheduled.length ? unscheduled.map(item => `
+      <div class="mini-row">
+        <span class="grow">${esc(item.headline || '')}</span>
+        <span class="chip ${esc(item.status)}">${esc(t('postStatus.' + item.status))}</span>
+        <button class="btn ghost sm" data-action="schedule-post" data-id="${item.post_id}">${esc(t('calendar.schedule'))}</button>
+      </div>`).join('') : `<div class="empty-state">${esc(t('calendar.none'))}</div>`;
+  }
+}
+
+function openScheduleModal(postId, defaultAt) {
+  const slots = ((state.calendar || {}).slots) || [];
+  const options = slots.slice(0, 30).map(slot =>
+    `<option value="${esc(slot.scheduled_at)}" ${slot.scheduled_at === defaultAt ? 'selected' : ''}>
+      ${esc(slot.local_label)} · ${esc(slot.window)}
+    </option>`).join('');
+  openModal({
+    title: t('calendar.scheduleTitle'),
+    description: t('calendar.notPublisher'),
+    body: `
+      <div class="field"><label>${esc(t('calendar.when'))}</label>
+        <select id="scheduleSlot">${options}</select></div>
+      <div class="field"><label>${esc(t('calendar.note'))}</label>
+        <input id="scheduleNote" type="text" maxlength="200"></div>`,
+    actions: [
+      { label: t('common.cancel'), kind: 'ghost', onClick: () => true },
+      {
+        label: t('calendar.schedule'), kind: 'primary',
+        onClick: async root => {
+          const scheduledAt = $('#scheduleSlot', root).value;
+          if (!scheduledAt) { toast(t('calendar.noPlan'), 'error'); return false; }
+          await api('/api/calendar/entries', {
+            method: 'POST',
+            body: { post_id: postId, scheduled_at: scheduledAt, note: $('#scheduleNote', root).value.trim() }
+          });
+          toast(t('calendar.scheduledToast'), 'success');
+          await loadCalendar();
+          return true;
+        }
+      }
+    ]
+  });
+}
+
+/* ----------------------------------------------------------------- reports */
+async function loadReports() {
+  const kinds = ((state.system || {}).options || {}).report_kinds || [];
+  const select = $('#reportKind');
+  if (select && kinds.length) {
+    const current = select.value || state.reportKind;
+    select.innerHTML = kinds.map(kind =>
+      `<option value="${esc(kind.kind)}">${esc(t('reportKind.' + kind.kind))}</option>`).join('');
+    select.value = kinds.some(kind => kind.kind === current) ? current : kinds[0].kind;
+  }
+  state.reportKind = (select && select.value) || state.reportKind;
+  const days = Number(($('#reportDays') || {}).value || 7);
+  const data = await api(`/api/reports/${state.reportKind}?days=${days}`);
+  state.report = data;
+  renderReports();
+}
+
+function renderReports() {
+  const report = state.report;
+  if (!report) return;
+  const meta = $('#reportMeta');
+  if (meta) {
+    meta.textContent = `${fill(t('reports.days'), { n: report.window_days })} · ${fill(t('reports.generated'), { time: fmtDate(report.generated_at) })}`;
+  }
+
+  const summaryHost = $('#reportSummary');
+  if (summaryHost) {
+    summaryHost.innerHTML = (report.summary || []).map(item => `
+      <div class="stat-card">
+        <span class="stat-label">${esc(item.label_vi)}</span>
+        <span class="stat-value">${esc(String(item.value))}</span>
+      </div>`).join('');
+  }
+
+  const sectionsHost = $('#reportSections');
+  if (sectionsHost) {
+    sectionsHost.innerHTML = (report.sections || []).map(section => {
+      const columns = section.columns || [];
+      const rows = section.rows || [];
+      return `<div class="panel report-panel">
+        <div class="panel-head"><h2>${esc(section.title_vi)}</h2></div>
+        ${rows.length ? `<div class="table-scroll"><table class="table">
+          <thead><tr>${columns.map(column => `<th>${esc(column.label_vi)}</th>`).join('')}</tr></thead>
+          <tbody>${rows.map(row => `<tr>${columns.map(column =>
+            `<td>${esc(row[column.key] === null || row[column.key] === undefined ? '—' : String(row[column.key]))}</td>`).join('')}</tr>`).join('')}</tbody>
+        </table></div>` : `<div class="empty-state">${esc(t('reports.empty'))}</div>`}
+      </div>`;
+    }).join('');
+  }
+
+  const notesHost = $('#reportNotes');
+  const notesPanel = $('#reportNotesPanel');
+  if (notesHost) {
+    notesHost.innerHTML = (report.notes || []).map(note => `<div class="flag info">${esc(note)}</div>`).join('')
+      || `<div class="muted">${esc(t('common.none'))}</div>`;
+  }
+  if (notesPanel) notesPanel.hidden = !(report.notes || []).length;
+}
+
+/* --------------------------------------------------------- facebook metrics */
+function openMetricsImportModal(postId) {
+  openModal({
+    title: t('fb.importTitle'),
+    description: t('fb.disclaimer'),
+    body: `
+      <div class="field">
+        <label>${esc(t('fb.csv'))}</label>
+        <textarea id="metricsCsv" rows="8" placeholder="post_id,reach,engagement,reactions,comments,shares,link_clicks,published_at"></textarea>
+        <span class="hint">${esc(t('fb.csvHint'))}</span>
+      </div>`,
+    actions: [
+      { label: t('common.cancel'), kind: 'ghost', onClick: () => true },
+      {
+        label: t('fb.import'), kind: 'primary',
+        onClick: async root => {
+          const csv = $('#metricsCsv', root).value.trim();
+          if (!csv) { toast(t('fb.noData'), 'error'); return false; }
+          const result = await api('/api/facebook/metrics/import', { method: 'POST', body: { csv } });
+          toast(fill(t('fb.imported'), { n: result.stored }), 'success');
+          if (result.errors && result.errors.length) {
+            toast(result.errors.slice(0, 3).join(' · '), 'error', 9000);
+          }
+          await openPost(postId);
+          return true;
+        }
+      }
+    ]
+  });
+}
+
+function openMetricsFetchModal(postId) {
+  openModal({
+    title: t('fb.fetchTitle'),
+    description: t('fb.disclaimer'),
+    body: `
+      <div class="field"><label>${esc(t('fb.externalId'))}</label>
+        <input id="metricsExternalId" type="text" placeholder="123456789_987654321"></div>`,
+    actions: [
+      { label: t('common.cancel'), kind: 'ghost', onClick: () => true },
+      {
+        label: t('fb.fetch'), kind: 'primary',
+        onClick: async root => {
+          const externalId = $('#metricsExternalId', root).value.trim();
+          if (!externalId) { toast(t('fb.externalId') + '?', 'error'); return false; }
+          try {
+            const result = await api(`/api/posts/${postId}/metrics/fetch`, {
+              method: 'POST', body: { external_id: externalId }
+            });
+            toast(fill(t('fb.imported'), { n: result.stored }), 'success');
+            await openPost(postId);
+            return true;
+          } catch (err) {
+            toast(err.message || t('common.error'), 'error', 9000);
+            return false;
+          }
+        }
+      }
+    ]
+  });
+}
+
 /* ----------------------------------------------------------------- actions */
 async function startTopicJob(action, topicId) {
   const pipeline = (state.settings && state.settings.pipeline) || {};
@@ -1376,7 +2330,82 @@ async function handleAction(action, el) {
     }
     case 'refresh-health': await refreshHealth(); await loadDashboard(); break;
     case 'refresh-jobs': await loadJobs(); break;
+    case 'calendar-refresh': await loadCalendar(); break;
     case 'save-settings': await saveSettings(); break;
+    case 'trend-strategy-save': {
+      const select = $('#trendStrategySelect');
+      if (!select) return;
+      await api(`/api/trends/${id}/strategy`, {
+        method: 'PUT',
+        body: { strategy: select.value, note: (($('#trendStrategyNote') || {}).value || '').trim() }
+      });
+      toast(t('strategy.saved'), 'success');
+      await loadTrends();
+      await openTrendDetail(Number(id));
+      break;
+    }
+    case 'trend-strategy-reset': {
+      await api(`/api/trends/${id}/strategy`, { method: 'DELETE' });
+      toast(t('strategy.resetDone'), 'success');
+      await loadTrends();
+      await openTrendDetail(Number(id));
+      break;
+    }
+    case 'strategy-save': {
+      const select = $('#strategySelect');
+      if (!select) return;
+      await api(`/api/trends/${id}/strategy`, {
+        method: 'PUT',
+        body: { strategy: select.value, note: (($('#strategyNote') || {}).value || '').trim() }
+      });
+      toast(t('strategy.saved'), 'success');
+      if (state.currentPostId) await openPost(state.currentPostId);
+      break;
+    }
+    case 'strategy-reset': {
+      await api(`/api/trends/${id}/strategy`, { method: 'DELETE' });
+      toast(t('strategy.resetDone'), 'success');
+      if (state.currentPostId) await openPost(state.currentPostId);
+      break;
+    }
+    case 'rate-post': {
+      const rating = Number(el.dataset.rating);
+      await api(`/api/posts/${id}/rating`, { method: 'POST', body: { rating } });
+      toast(`${t('learning.saved')} · ${rating}/5`, 'success');
+      break;
+    }
+    case 'image-check': {
+      const imageId = Number(el.dataset.imageId);
+      const result = await api(`/api/posts/${id}/image-check`, {
+        method: 'POST', body: { image_id: imageId }
+      });
+      toast(`${t('imageStudio.checked')}: ${Math.round(result.score)}/100 · ${t('imgVerdict.' + result.verdict)}`,
+        result.verdict === 'reject' ? 'error' : 'success');
+      await openPost(id);
+      break;
+    }
+    case 'import-metrics': openMetricsImportModal(id); break;
+    case 'fetch-metrics': openMetricsFetchModal(id); break;
+    case 'schedule-post': openScheduleModal(Number(el.dataset.id), el.dataset.scheduled || null); break;
+    case 'calendar-remove': {
+      if (!await confirmDialog(t('calendar.remove'), t('calendar.confirmRemove'))) return;
+      await api(`/api/calendar/entries/${id}`, { method: 'DELETE' });
+      toast(t('calendar.removedToast'), 'success');
+      await loadCalendar();
+      break;
+    }
+    case 'report-export': {
+      const days = Number(($('#reportDays') || {}).value || 7);
+      window.location.href = `/api/reports/${state.reportKind}?days=${days}&format=md`;
+      break;
+    }
+    case 'learning-reset': {
+      if (!await confirmDialog(t('learning.reset'), t('learning.resetConfirm'))) return;
+      await api('/api/learning', { method: 'DELETE' });
+      toast(t('learning.resetDone'), 'success');
+      await loadSettings();
+      break;
+    }
     case 'export-approved': downloadExport('md', 'approved'); break;
     case 'export': downloadExport(el.dataset.format, el.dataset.status || 'approved'); break;
     case 'trend-detail': await openTrendDetail(id); break;
@@ -1443,11 +2472,24 @@ async function handleAction(action, el) {
     case 'gen-image': {
       const post = state.postDetail || {};
       const pipeline = (state.settings && state.settings.pipeline) || {};
+      const studio = imageStudioOptions();
       openModal({
         title: t('post.generateImage'),
         body: `
           <div class="field"><label>${esc(t('post.variations'))}</label>
-            <input id="genVariations" type="number" min="1" max="4" value="${pipeline.image_variations || 1}"></div>
+            <input id="genVariations" type="number" min="1" max="3" value="${Math.min(3, pipeline.image_variations || 1)}">
+            <span class="hint">${esc(t('post.gpuLimit'))}</span></div>
+          <div class="field-grid">
+            <div class="field"><label>${esc(t('imageStudio.style'))}</label>
+              <select id="genStyle">
+                <option value="auto">${esc(t('imageStudio.auto'))}</option>
+                ${studio.styles.map(item => `<option value="${esc(item.key)}">${esc(t('imgStyle.' + item.key))}</option>`).join('')}
+              </select></div>
+            <div class="field"><label>${esc(t('imageStudio.aspect'))}</label>
+              <select id="genAspect">
+                ${studio.aspects.map(item => `<option value="${esc(item.key)}" ${item.key === studio.default_aspect ? 'selected' : ''}>${esc(item.key)}</option>`).join('')}
+              </select></div>
+          </div>
           <div class="field"><label>${esc(t('post.customPrompt'))}</label>
             <textarea id="genPrompt" rows="3" placeholder="${esc(post.image_prompt || '')}"></textarea></div>
           <div class="field"><label>${esc(t('post.seed'))}</label>
@@ -1462,7 +2504,9 @@ async function handleAction(action, el) {
               const body = {
                 variations: Number($('#genVariations', root).value) || 1,
                 prompt: prompt || undefined,
-                seed: seedValue ? Number(seedValue) : undefined
+                seed: seedValue ? Number(seedValue) : undefined,
+                style: $('#genStyle', root).value || 'auto',
+                aspect: $('#genAspect', root).value || undefined
               };
               const data = await api(`/api/posts/${id}/image`, { method: 'POST', body });
               toast(t('post.generating'));
@@ -1473,6 +2517,36 @@ async function handleAction(action, el) {
           }
         ]
       });
+      break;
+    }
+    case 'versions-generate': await startVersions(id); break;
+    case 'versions-compare': await openVersionsModal(id); break;
+    case 'apply-version': {
+      const created = await api(`/api/versions/${id}/apply`, { method: 'POST' });
+      closeModal();
+      toast(t('versions.applied'), 'success');
+      state.currentPostId = created.id;
+      await loadPosts();
+      await openPost(created.id);
+      break;
+    }
+    case 'assess-image': {
+      const data = await api(`/api/posts/${id}/assess-image`, { method: 'POST', body: {} });
+      toast(t('quality.assessingImage'));
+      const job = await awaitJob(data.job_id, { refresh: false });
+      if (job.status === 'done') await openPost(id);
+      break;
+    }
+    case 'gen-image-quick': {
+      const count = Number(el.dataset.count) || 1;
+      const style = (($('#imageStyle') || {}).value) || 'auto';
+      const aspect = (($('#imageAspect') || {}).value) || undefined;
+      const data = await api(`/api/posts/${id}/image`, {
+        method: 'POST', body: { variations: count, style, aspect }
+      });
+      toast(t('post.generating'));
+      const job = await awaitJob(data.job_id, { refresh: false });
+      if (job.status === 'done') await openPost(id);
       break;
     }
     case 'select-image': {
@@ -1541,6 +2615,34 @@ function bindStaticControls() {
       try { await loadPosts(); } catch (err) { toast(err.message, 'error'); }
     });
   }
+  const analyticsDays = $('#analyticsDays');
+  if (analyticsDays) {
+    analyticsDays.addEventListener('change', async () => {
+      try { await loadAnalytics(); } catch (err) { toast(err.message, 'error'); }
+    });
+  }
+
+  const calendarDays = $('#calendarDays');
+  if (calendarDays) {
+    calendarDays.addEventListener('change', async () => {
+      try { await loadCalendar(); } catch (err) { toast(err.message, 'error'); }
+    });
+  }
+
+  const reportKind = $('#reportKind');
+  if (reportKind) {
+    reportKind.addEventListener('change', async () => {
+      state.reportKind = reportKind.value;
+      try { await loadReports(); } catch (err) { toast(err.message, 'error'); }
+    });
+  }
+  const reportDays = $('#reportDays');
+  if (reportDays) {
+    reportDays.addEventListener('change', async () => {
+      try { await loadReports(); } catch (err) { toast(err.message, 'error'); }
+    });
+  }
+
   const postSearch = $('#postSearch');
   if (postSearch) {
     let timer = null;

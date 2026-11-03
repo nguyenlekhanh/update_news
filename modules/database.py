@@ -6,10 +6,11 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
+from datetime import timedelta
 from typing import Any, Iterable
 
 from .config import DB_PATH, SOURCES_SEED_PATH, settings
-from .utils import json_dumps, json_loads_safe, utcnow_iso
+from .utils import json_dumps, json_loads_safe, utcnow, utcnow_iso
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS sources (
@@ -52,6 +53,20 @@ CREATE TABLE IF NOT EXISTS topics (
 );
 CREATE INDEX IF NOT EXISTS idx_topics_status ON topics(status);
 CREATE INDEX IF NOT EXISTS idx_topics_score ON topics(score DESC);
+
+CREATE TABLE IF NOT EXISTS topic_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    score REAL,
+    source_count INTEGER,
+    independent_domains INTEGER,
+    traffic INTEGER,
+    engagement INTEGER,
+    phase TEXT,
+    captured_at TEXT,
+    meta TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_history_topic ON topic_history(topic_id, id DESC);
 
 CREATE TABLE IF NOT EXISTS articles (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -132,6 +147,28 @@ CREATE TABLE IF NOT EXISTS posts (
 CREATE INDEX IF NOT EXISTS idx_posts_status ON posts(status);
 CREATE INDEX IF NOT EXISTS idx_posts_topic ON posts(topic_id);
 
+CREATE TABLE IF NOT EXISTS post_versions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL REFERENCES topics(id) ON DELETE CASCADE,
+    research_id INTEGER,
+    variant TEXT,
+    style TEXT,
+    headline TEXT,
+    hook TEXT,
+    main_post TEXT,
+    short_post TEXT,
+    closing_question TEXT,
+    hashtags TEXT,
+    image_prompt TEXT,
+    image_concept TEXT,
+    flags TEXT,
+    quality TEXT,
+    source_count INTEGER DEFAULT 0,
+    selected INTEGER DEFAULT 0,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_versions_topic ON post_versions(topic_id);
+
 CREATE TABLE IF NOT EXISTS images (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
@@ -182,16 +219,78 @@ CREATE TABLE IF NOT EXISTS logs (
     created_at TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_logs_created ON logs(id DESC);
+
+CREATE TABLE IF NOT EXISTS topic_strategy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    topic_id INTEGER NOT NULL UNIQUE REFERENCES topics(id) ON DELETE CASCADE,
+    recommended TEXT,
+    override TEXT,
+    note TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS editorial_feedback (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind TEXT NOT NULL,
+    topic_id INTEGER,
+    post_id INTEGER,
+    version_id INTEGER,
+    category TEXT,
+    style TEXT,
+    signal TEXT,
+    rating INTEGER,
+    detail TEXT,
+    created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_feedback_kind ON editorial_feedback(kind);
+CREATE INDEX IF NOT EXISTS idx_feedback_created ON editorial_feedback(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_feedback_category ON editorial_feedback(category);
+
+CREATE TABLE IF NOT EXISTS calendar_entries (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    scheduled_at TEXT NOT NULL,
+    slot TEXT,
+    status TEXT DEFAULT 'planned',
+    note TEXT,
+    created_at TEXT,
+    updated_at TEXT,
+    UNIQUE(post_id, scheduled_at)
+);
+CREATE INDEX IF NOT EXISTS idx_calendar_time ON calendar_entries(scheduled_at);
+
+CREATE TABLE IF NOT EXISTS post_metrics (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    post_id INTEGER NOT NULL REFERENCES posts(id) ON DELETE CASCADE,
+    source TEXT DEFAULT 'manual',
+    reach INTEGER DEFAULT 0,
+    engagement INTEGER DEFAULT 0,
+    reactions INTEGER DEFAULT 0,
+    comments INTEGER DEFAULT 0,
+    shares INTEGER DEFAULT 0,
+    link_clicks INTEGER DEFAULT 0,
+    published_at TEXT,
+    imported_at TEXT,
+    meta TEXT,
+    UNIQUE(post_id, source, published_at)
+);
+CREATE INDEX IF NOT EXISTS idx_metrics_post ON post_metrics(post_id);
+CREATE INDEX IF NOT EXISTS idx_metrics_published ON post_metrics(published_at DESC);
 """
 
 JSON_FIELDS = {
     "topics": {"score_breakdown", "metrics", "meta"},
+    "topic_history": {"meta"},
+    "post_versions": {"hashtags", "flags", "quality"},
     "articles": {"meta"},
     "research_reports": {"data"},
     "fact_checks": {"source_urls"},
     "posts": {"alt_headlines", "hashtags", "sources", "ai_flags"},
     "images": {"meta"},
     "jobs": {"payload", "result"},
+    "editorial_feedback": {"detail"},
+    "post_metrics": {"meta"},
 }
 
 
@@ -456,6 +555,87 @@ class Database:
     def delete_topic(self, topic_id: int) -> None:
         self.execute("DELETE FROM topics WHERE id = ?", (topic_id,))
 
+    # ---------------------------------------------------------- topic history
+    def add_history(self, topic_id: int, data: dict) -> int:
+        return self.execute(
+            """INSERT INTO topic_history
+               (topic_id, score, source_count, independent_domains, traffic, engagement,
+                phase, captured_at, meta)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
+            (
+                topic_id, float(data.get("score") or 0),
+                int(data.get("source_count") or 0),
+                int(data.get("independent_domains") or 0),
+                data.get("traffic"), data.get("engagement"),
+                data.get("phase"), data.get("captured_at") or _now(),
+                json_dumps(data.get("meta") or {}),
+            ),
+        )
+
+    def list_history(self, topic_id: int, limit: int = 60) -> list[dict]:
+        rows = self.query(
+            """SELECT * FROM topic_history WHERE topic_id = ?
+               ORDER BY id DESC LIMIT ?""",
+            (topic_id, limit),
+        )
+        return list(reversed(rows))
+
+    def latest_history(self, topic_id: int) -> dict | None:
+        return self.query_one(
+            "SELECT * FROM topic_history WHERE topic_id = ? ORDER BY id DESC LIMIT 1",
+            (topic_id,),
+        )
+
+    def recent_history_map(self, limit_per_topic: int = 12) -> dict[int, list[dict]]:
+        rows = self.query(
+            "SELECT * FROM topic_history ORDER BY topic_id ASC, id DESC"
+        )
+        grouped: dict[int, list[dict]] = {}
+        for row in rows:
+            bucket = grouped.setdefault(row["topic_id"], [])
+            if len(bucket) < limit_per_topic:
+                bucket.append(row)
+        return {tid: list(reversed(items)) for tid, items in grouped.items()}
+
+    # --------------------------------------------------------- post versions
+    def create_version(self, data: dict) -> int:
+        return self.execute(
+            """INSERT INTO post_versions
+               (topic_id, research_id, variant, style, headline, hook, main_post, short_post,
+                closing_question, hashtags, image_prompt, image_concept, flags, quality,
+                source_count, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                data["topic_id"], data.get("research_id"), data.get("variant", ""),
+                data.get("style", ""), data.get("headline", ""), data.get("hook", ""),
+                data.get("main_post", ""), data.get("short_post", ""),
+                data.get("closing_question", ""), json_dumps(data.get("hashtags") or []),
+                data.get("image_prompt", ""), data.get("image_concept", ""),
+                json_dumps(data.get("flags") or []), json_dumps(data.get("quality") or {}),
+                int(data.get("source_count") or 0), _now(),
+            ),
+        )
+
+    def list_versions(self, topic_id: int) -> list[dict]:
+        return self.query(
+            "SELECT * FROM post_versions WHERE topic_id = ? ORDER BY variant ASC, id ASC",
+            (topic_id,),
+        )
+
+    def get_version(self, version_id: int) -> dict | None:
+        return self.query_one("SELECT * FROM post_versions WHERE id = ?", (version_id,))
+
+    def delete_versions(self, topic_id: int) -> None:
+        self.execute("DELETE FROM post_versions WHERE topic_id = ?", (topic_id,))
+
+    def select_version(self, topic_id: int, version_id: int) -> None:
+        with self.tx() as conn:
+            conn.execute("UPDATE post_versions SET selected = 0 WHERE topic_id = ?", (topic_id,))
+            conn.execute(
+                "UPDATE post_versions SET selected = 1 WHERE id = ? AND topic_id = ?",
+                (version_id, topic_id),
+            )
+
     # -------------------------------------------------------------- articles
     def add_article(self, topic_id: int, data: dict) -> int | None:
         try:
@@ -663,6 +843,22 @@ class Database:
             ),
         )
 
+    def update_image(self, image_id: int, patch: dict) -> None:
+        allowed = {"path", "prompt", "negative_prompt", "seed", "status", "selected", "error", "meta"}
+        sets, params = [], []
+        for key, value in patch.items():
+            if key not in allowed:
+                continue
+            if key == "meta" and not isinstance(value, str):
+                value = json_dumps(value)
+            if key == "selected":
+                value = 1 if value else 0
+            sets.append(f"{key} = ?")
+            params.append(value)
+        if sets:
+            params.append(image_id)
+            self.execute(f"UPDATE images SET {', '.join(sets)} WHERE id = ?", params)
+
     def list_images(self, post_id: int) -> list[dict]:
         return self.query(
             "SELECT * FROM images WHERE post_id = ? ORDER BY selected DESC, id DESC",
@@ -679,6 +875,170 @@ class Database:
 
     def delete_image(self, image_id: int) -> None:
         self.execute("DELETE FROM images WHERE id = ?", (image_id,))
+
+    # -------------------------------------------------- strategy overrides
+    def get_strategy(self, topic_id: int) -> dict | None:
+        return self.query_one("SELECT * FROM topic_strategy WHERE topic_id = ?", (topic_id,))
+
+    def set_strategy(self, topic_id: int, recommended: str | None,
+                     override: str | None = None, note: str = "") -> dict:
+        existing = self.get_strategy(topic_id)
+        if existing:
+            self.execute(
+                """UPDATE topic_strategy SET recommended = ?, override = ?, note = ?,
+                   updated_at = ? WHERE topic_id = ?""",
+                (recommended, override, note, _now(), topic_id),
+            )
+        else:
+            self.execute(
+                """INSERT INTO topic_strategy (topic_id, recommended, override, note,
+                   created_at, updated_at) VALUES (?,?,?,?,?,?)""",
+                (topic_id, recommended, override, note, _now(), _now()),
+            )
+        return self.get_strategy(topic_id) or {}
+
+    def clear_strategy_override(self, topic_id: int) -> None:
+        self.execute(
+            "UPDATE topic_strategy SET override = NULL, note = '', updated_at = ? WHERE topic_id = ?",
+            (_now(), topic_id),
+        )
+
+    # ------------------------------------------------------- editorial feedback
+    def add_feedback(self, data: dict) -> int:
+        return self.execute(
+            """INSERT INTO editorial_feedback
+               (kind, topic_id, post_id, version_id, category, style, signal, rating,
+                detail, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                str(data.get("kind") or "edit")[:40], data.get("topic_id"),
+                data.get("post_id"), data.get("version_id"),
+                (data.get("category") or "")[:60], (data.get("style") or "")[:60],
+                (data.get("signal") or "")[:80], data.get("rating"),
+                json_dumps(data.get("detail") or {}), _now(),
+            ),
+        )
+
+    def list_feedback(self, kind: str | None = None, category: str | None = None,
+                      limit: int = 500) -> list[dict]:
+        where, params = [], []
+        if kind:
+            where.append("kind = ?")
+            params.append(kind)
+        if category:
+            where.append("category = ?")
+            params.append(category)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        return self.query(
+            f"SELECT * FROM editorial_feedback {clause} ORDER BY id DESC LIMIT ?",
+            params + [limit],
+        )
+
+    def delete_feedback(self, kind: str | None = None,
+                        category: str | None = None) -> int:
+        where, params = [], []
+        if kind:
+            where.append("kind = ?")
+            params.append(kind)
+        if category:
+            where.append("category = ?")
+            params.append(category)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        with self.tx() as conn:
+            cur = conn.execute(f"DELETE FROM editorial_feedback {clause}", tuple(params))
+            return cur.rowcount or 0
+
+    # --------------------------------------------------------- calendar entries
+    def add_calendar_entry(self, data: dict) -> int:
+        return self.execute(
+            """INSERT OR REPLACE INTO calendar_entries
+               (post_id, scheduled_at, slot, status, note, created_at, updated_at)
+               VALUES (?,?,?,?,?,?,?)""",
+            (
+                int(data["post_id"]), data["scheduled_at"], data.get("slot") or "",
+                data.get("status") or "planned", data.get("note") or "",
+                _now(), _now(),
+            ),
+        )
+
+    def list_calendar_entries(self, start: str | None = None,
+                              end: str | None = None, limit: int = 400) -> list[dict]:
+        where, params = [], []
+        if start:
+            where.append("c.scheduled_at >= ?")
+            params.append(start)
+        if end:
+            where.append("c.scheduled_at <= ?")
+            params.append(end)
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        rows = self.query(
+            f"""SELECT c.*, p.headline AS headline, p.status AS post_status,
+                       p.category AS post_category, t.title AS topic_title
+                FROM calendar_entries c
+                LEFT JOIN posts p ON p.id = c.post_id
+                LEFT JOIN topics t ON t.id = p.topic_id
+                {clause} ORDER BY c.scheduled_at ASC LIMIT ?""",
+            params + [limit],
+        )
+        return rows
+
+    def update_calendar_entry(self, entry_id: int, patch: dict) -> None:
+        allowed = {"scheduled_at", "slot", "status", "note"}
+        sets, params = [], []
+        for key, value in patch.items():
+            if key in allowed:
+                sets.append(f"{key} = ?")
+                params.append(value)
+        if not sets:
+            return
+        sets.append("updated_at = ?")
+        params.extend([_now(), entry_id])
+        self.execute(f"UPDATE calendar_entries SET {', '.join(sets)} WHERE id = ?", params)
+
+    def delete_calendar_entry(self, entry_id: int) -> None:
+        self.execute("DELETE FROM calendar_entries WHERE id = ?", (entry_id,))
+
+    # ------------------------------------------------------------- post metrics
+    def add_metrics(self, data: dict) -> int:
+        with self.tx() as conn:
+            cur = conn.execute(
+                """INSERT OR REPLACE INTO post_metrics
+                   (post_id, source, reach, engagement, reactions, comments, shares,
+                    link_clicks, published_at, imported_at, meta)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    int(data["post_id"]), data.get("source") or "manual",
+                    int(data.get("reach") or 0), int(data.get("engagement") or 0),
+                    int(data.get("reactions") or 0), int(data.get("comments") or 0),
+                    int(data.get("shares") or 0), int(data.get("link_clicks") or 0),
+                    data.get("published_at") or _now(), _now(),
+                    json_dumps(data.get("meta") or {}),
+                ),
+            )
+            return cur.lastrowid or cur.rowcount
+
+    def list_metrics(self, days: int | None = None, post_id: int | None = None) -> list[dict]:
+        where, params = [], []
+        if post_id:
+            where.append("m.post_id = ?")
+            params.append(post_id)
+        if days:
+            start = utcnow() - timedelta(days=max(1, int(days)))
+            where.append("COALESCE(m.published_at, m.imported_at) >= ?")
+            params.append(start.replace(microsecond=0).isoformat())
+        clause = f"WHERE {' AND '.join(where)}" if where else ""
+        return self.query(
+            f"""SELECT m.*, p.headline AS headline, p.style AS style,
+                       p.category AS category, p.topic_id AS topic_id,
+                       t.title AS topic_title,
+                       (SELECT path FROM images i WHERE i.post_id = p.id AND i.status='done'
+                        ORDER BY i.selected DESC, i.id DESC LIMIT 1) AS thumb
+                FROM post_metrics m
+                LEFT JOIN posts p ON p.id = m.post_id
+                LEFT JOIN topics t ON t.id = p.topic_id
+                {clause} ORDER BY COALESCE(m.published_at, m.imported_at) DESC LIMIT 500""",
+            params,
+        )
 
     # ------------------------------------------------------------------ jobs
     def create_job(self, kind: str, payload: dict, topic_id=None, post_id=None, priority=5) -> int:

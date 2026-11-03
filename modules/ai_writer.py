@@ -110,6 +110,25 @@ LENGTH_GUIDES = {
     "very_long": "khoảng 450-650 từ cho bài chính",
 }
 
+# Three fixed versions offered for every story (Phase 2).
+VERSION_PLAN = (
+    {
+        "variant": "A", "style": "professional_journalism", "length": "medium",
+        "include_sources": True, "label_vi": "Tin tức chuyên nghiệp",
+        "label_en": "Professional news",
+    },
+    {
+        "variant": "B", "style": "conversational", "length": "medium",
+        "include_sources": True, "label_vi": "Trò chuyện cuốn hút",
+        "label_en": "Engaging conversation",
+    },
+    {
+        "variant": "C", "style": "viral_short", "length": "short",
+        "include_sources": False, "label_vi": "Ngắn, mạnh cho mạng xã hội",
+        "label_en": "Short and punchy",
+    },
+)
+
 CLICKBAIT_PATTERNS = [
     r"sốc\s*!", r"chấn động", r"không thể tin", r"bạn sẽ không tin",
     r"gây bão", r"dậy sóng", r"cực sốc", r"phải xem ngay", r"100%\s*thật",
@@ -231,6 +250,125 @@ class AIWriter:
         }
         return post
 
+    # ------------------------------------------------------------- versions
+    def generate_versions(
+        self,
+        topic_id: int,
+        research_id: int | None = None,
+        options: dict | None = None,
+        should_cancel: Callable[[], bool] | None = None,
+        progress: Callable[[int, str], None] | None = None,
+    ) -> dict:
+        """Generate the three comparison versions (A/B/C) for one story."""
+        from .quality import content_score
+
+        topic = self.db.get_topic(topic_id)
+        if not topic:
+            raise StageError(f"Không tìm thấy chủ đề #{topic_id}")
+        research = (
+            self.db.query_one("SELECT * FROM research_reports WHERE id = ?", (research_id,))
+            if research_id
+            else topic.get("research")
+        )
+        if not research:
+            raise StageError("Chủ đề chưa có báo cáo nghiên cứu. Hãy chạy nghiên cứu trước.")
+
+        def report(pct: int, message: str) -> None:
+            if progress:
+                progress(max(0, min(100, pct)), message)
+
+        def check_cancel() -> None:
+            if should_cancel and should_cancel():
+                raise CancelledError("Đã hủy theo yêu cầu người dùng")
+
+        report_data = research.get("data") or {}
+        sources = report_data.get("sources") or []
+        base_opts = self._resolve_options(options)
+        self.db.delete_versions(topic_id)
+
+        image_prompt = image_negative = image_concept = ""
+        created: list[dict] = []
+        for index, plan in enumerate(VERSION_PLAN):
+            check_cancel()
+            report(
+                int(index * 100 / len(VERSION_PLAN)) + 4,
+                f"Qwen đang viết bản {plan['variant']} ({plan['label_vi']})…",
+            )
+            opts = dict(base_opts)
+            opts.update(
+                style=plan["style"],
+                length=plan["length"],
+                include_sources=plan["include_sources"],
+                language=base_opts["language"],
+            )
+            prompt = self._build_prompt(topic, report_data, opts, research)
+            try:
+                raw = self.ollama.generate_json(
+                    prompt,
+                    system=WRITER_SYSTEM,
+                    schema=WRITER_SCHEMA,
+                    temperature=float(settings.get("ollama.temperature", 0.8)),
+                    num_predict=3500,
+                )
+            except OllamaError as exc:
+                raise StageError(f"AI không tạo được bản {plan['variant']}: {exc}") from exc
+            check_cancel()
+
+            main_post, flags, hashtags = self._finalize(raw, report_data, opts, sources)
+            headline = str(raw.get("headline") or topic["title"]).strip()
+            short_post = self._clean_variant(raw.get("short_post"))
+            if not short_post:
+                short_post = truncate(self._body_of(main_post), 320)
+            if plan["variant"] == "A":
+                image_prompt, image_negative, image_concept, image_flags = self._ensure_image_prompt(
+                    raw, headline, report_data.get("summary") or ""
+                )
+                flags.extend(image_flags)
+            quality = content_score(
+                {
+                    "main_post": main_post, "hook": raw.get("hook"),
+                    "closing_question": raw.get("closing_question"),
+                    "hashtags": hashtags, "sources": sources,
+                    "ai_flags": flags,
+                }
+            )
+            version_id = self.db.create_version(
+                {
+                    "topic_id": topic_id,
+                    "research_id": research["id"],
+                    "variant": plan["variant"],
+                    "style": plan["style"],
+                    "headline": headline,
+                    "hook": str(raw.get("hook") or "").strip(),
+                    "main_post": main_post,
+                    "short_post": short_post,
+                    "closing_question": str(raw.get("closing_question") or "").strip(),
+                    "hashtags": hashtags,
+                    "image_prompt": image_prompt,
+                    "image_concept": image_concept,
+                    "flags": flags,
+                    "quality": {
+                        **quality,
+                        "variant_label_vi": plan["label_vi"],
+                        "variant_label_en": plan["label_en"],
+                    },
+                    "source_count": len(sources),
+                }
+            )
+            created.append({
+                "id": version_id, "variant": plan["variant"], "style": plan["style"],
+                "headline": headline, "words": count_words(self._body_of(main_post)),
+                "quality": quality["score"], "flags": len(flags),
+            })
+
+        self.db.update_topic(topic_id, {"status": "drafted"})
+        self.db.add_log(
+            f"Đã tạo {len(created)} phiên bản nội dung cho chủ đề #{topic_id}",
+            "info", "writer", {"versions": created},
+        )
+        report(100, "Đã tạo xong 3 phiên bản")
+        return {"topic_id": topic_id, "versions": created, "image_prompt": image_prompt}
+
     # --------------------------------------------------------------- internal
     def _resolve_options(self, options: dict | None) -> dict:
         cfg = settings.section("writer")
@@ -248,6 +386,8 @@ class AIWriter:
         for key, value in (options or {}).items():
             if key in merged and value not in (None, ""):
                 merged[key] = value
+        if options and options.get("strategy_key"):
+            merged["strategy_key"] = str(options["strategy_key"])
         merged["hashtag_count"] = max(0, min(15, int(merged["hashtag_count"])))
         if merged["style"] not in STYLE_GUIDES:
             merged["style"] = "friendly_storytelling"
@@ -284,6 +424,7 @@ class AIWriter:
         category = opts["category"] if opts["category"] != "auto" else (
             report.get("category") or topic.get("category") or "general"
         )
+        guidance = self._editorial_guidance(opts, category)
 
         return (
             f"CHỦ ĐỀ: {headline_seed}\n"
@@ -303,7 +444,8 @@ class AIWriter:
             + "\n\n"
             f"ĐỘ TIN CẬY NGHIÊN CỨU: {research.get('confidence', 'n/a')}% "
             f"({research.get('confidence_label', '')})\n\n"
-            "YÊU CẦU VIẾT:\n"
+            + (f"{guidance}\n\n" if guidance else "")
+            + "YÊU CẦU VIẾT:\n"
             f"- Phong cách: {STYLE_GUIDES[opts['style']]}\n"
             f"- Giọng điệu: {TONE_GUIDES.get(opts['tone'], opts['tone'])}.\n"
             f"- Khán giả: {AUDIENCE_GUIDES.get(opts['audience'], opts['audience'])}.\n"
@@ -329,6 +471,33 @@ class AIWriter:
             "TUYỆT ĐỐI KHÔNG thêm số liệu, ngày tháng, câu nói hay sự kiện không có trong báo cáo trên. "
             "Trả về JSON đúng schema."
         )
+
+    def _editorial_guidance(self, opts: dict, category: str) -> str:
+        """Strategy + locally learned preferences added to the prompt.
+
+        Both blocks are optional and never add facts: they only shape tone and
+        structure. Failures are ignored so generation keeps working.
+        """
+        blocks: list[str] = []
+        strategy_key = opts.get("strategy_key")
+        if strategy_key and settings.get("strategy.enabled", True):
+            try:
+                from .strategy import prompt_block
+
+                block = prompt_block(strategy_key)
+                if block:
+                    blocks.append(block)
+            except Exception:  # noqa: BLE001 - guidance must never block writing
+                pass
+        try:
+            from .learning import EditorialLearning
+
+            hint = EditorialLearning(self.db).style_hint(category)
+            if hint:
+                blocks.append(hint)
+        except Exception:  # noqa: BLE001 - learning is advisory only
+            pass
+        return "\n\n".join(blocks)
 
     def _finalize(self, raw: dict, report: dict, opts: dict, sources: list[dict]):
         flags: list[dict] = []

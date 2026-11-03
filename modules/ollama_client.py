@@ -281,6 +281,53 @@ class OllamaClient:
             raw=data,
         )
 
+    def vision_json(
+        self,
+        prompt: str,
+        images: list[str],
+        model: str,
+        system: str | None = None,
+        temperature: float = 0.1,
+        num_predict: int = 400,
+        json_schema: dict | None = None,
+    ) -> GenerationResult:
+        """Ask a local vision model about one or more images (base64 payloads)."""
+        payload = self._payload(
+            prompt, system, model, json_schema, temperature, num_predict, False, False
+        )
+        payload["images"] = images
+        payload["keep_alive"] = "5m"
+        started = time.perf_counter()
+        try:
+            with self._client() as client:
+                resp = client.post("/api/generate", json=payload)
+                resp.raise_for_status()
+                data = resp.json()
+        except httpx.HTTPStatusError as exc:
+            body = ""
+            try:
+                body = exc.response.text[:300]
+            except Exception:  # noqa: BLE001
+                pass
+            raise OllamaError(f"Ollama từ chối yêu cầu vision: {body or exc}") from exc
+        except httpx.HTTPError as exc:
+            raise OllamaError(
+                f"Không kết nối được Ollama tại {self.base_url}: {exc}"
+            ) from exc
+        if data.get("error"):
+            raise OllamaError(str(data["error"]))
+        result = GenerationResult(
+            text=data.get("response") or "",
+            model=data.get("model") or model,
+            done_reason=data.get("done_reason", ""),
+            prompt_tokens=int(data.get("prompt_eval_count") or 0),
+            output_tokens=int(data.get("eval_count") or 0),
+            raw=data,
+        )
+        result.duration_seconds = round(time.perf_counter() - started, 2)
+        result.text = (result.text or "").strip()
+        return result
+
     def generate_json(
         self,
         prompt: str,

@@ -107,6 +107,41 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "respect_robots": True,
         "search_more_sources": True,
     },
+    "quality": {
+        "vision_model": "qwen2.5vl:7b",
+        "auto_assess_images": False,
+    },
+    "strategy": {
+        "enabled": True,
+        "apply_to_writing": True,
+        "allow_override": True,
+    },
+    "learning": {
+        "enabled": True,
+        "use_in_prompts": True,
+        "min_samples": 3,
+    },
+    "images": {
+        "style": "auto",
+        "aspect": "1:1",
+        "detect_duplicates": True,
+        "text_risk_check": True,
+        "min_short_side": 640,
+    },
+    "calendar": {
+        "enabled": True,
+        "utc_offset_hours": 7,
+        "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"],
+        "time_windows": ["08:00-09:00", "12:00-13:00", "20:00-21:30"],
+        "max_per_day": 2,
+        "categories": [],
+        "reminder_hours": 24,
+    },
+    "facebook_metrics": {
+        "enabled": False,
+        "graph_version": "v21.0",
+        "utc_offset_hours": 7,
+    },
     "pipeline": {
         "auto_image": True,
         "image_variations": 1,
@@ -119,6 +154,7 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "free_comfy_before_llm": False,
         "min_free_vram_mb": 1500,
         "gpu_wait_seconds": 45,
+        "max_concurrent_image_jobs": 1,
     },
 }
 

@@ -27,6 +27,15 @@
         <button class="nav-item" data-view="posts">
           <span class="nav-icon">▤</span><span data-i18n="nav.posts">Bài viết</span>
         </button>
+        <button class="nav-item" data-view="analytics">
+          <span class="nav-icon">▦</span><span data-i18n="nav.analytics">Phân tích</span>
+        </button>
+        <button class="nav-item" data-view="calendar">
+          <span class="nav-icon">▩</span><span data-i18n="nav.calendar">Lịch nội dung</span>
+        </button>
+        <button class="nav-item" data-view="reports">
+          <span class="nav-icon">◎</span><span data-i18n="nav.reports">Báo cáo</span>
+        </button>
         <button class="nav-item" data-view="jobs">
           <span class="nav-icon">◔</span><span data-i18n="nav.jobs">Hàng đợi</span>
           <span class="nav-badge" id="jobsBadge" hidden>0</span>
@@ -90,14 +99,20 @@
               </div>
               <div id="recentJobs" class="mini-list"></div>
             </div>
-          </div>
-          <div class="panel">
-            <div class="panel-head">
-              <h2 data-i18n="dash.topTrends">Chủ đề nổi bật</h2>
-              <button class="btn ghost sm" data-goto="trends" data-i18n="common.viewAll">Xem tất cả</button>
+          </div>            <div class="panel">
+              <div class="panel-head">
+                <h2 data-i18n="dash.topTrends">Chủ đề nổi bật</h2>
+                <button class="btn ghost sm" data-goto="trends" data-i18n="common.viewAll">Xem tất cả</button>
+              </div>
+              <div id="dashboardTrends" class="mini-trends"></div>
             </div>
-            <div id="dashboardTrends" class="mini-trends"></div>
-          </div>
+            <div class="panel">
+              <div class="panel-head">
+                <h2 data-i18n="calendar.reminders">Nhắc việc</h2>
+                <button class="btn ghost sm" data-goto="calendar" data-i18n="common.viewAll">Xem tất cả</button>
+              </div>
+              <div id="dashboardReminders" class="mini-list"></div>
+            </div>
         </section>
 
         <section class="view" id="view-trends">
@@ -155,6 +170,108 @@
             <div class="panel editor-panel" id="postDetail">
               <div class="empty-state" data-i18n="posts.empty">Chọn một bài viết để xem và biên tập.</div>
             </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-analytics">
+          <div class="stat-grid" id="analyticsFunnel"></div>
+          <div class="panel">
+            <div class="panel-head">
+              <h2 data-i18n="analytics.timeline">Diễn biến nội dung</h2>
+              <label class="field-inline">
+                <span data-i18n="analytics.window">Khoảng thời gian</span>
+                <select id="analyticsDays">
+                  <option value="7">7</option>
+                  <option value="14" selected>14</option>
+                  <option value="30">30</option>
+                  <option value="90">90</option>
+                </select>
+              </label>
+            </div>
+            <div id="analyticsChart" class="chart-host"></div>
+            <div id="analyticsLegend" class="chart-legend"></div>
+          </div>
+          <div class="dashboard-columns">
+            <div class="panel">
+              <div class="panel-head"><h2 data-i18n="analytics.categories">Nhóm nội dung hiệu quả</h2></div>
+              <div id="analyticsCategories"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2 data-i18n="analytics.recurring">Chủ đề lặp lại</h2></div>
+              <div id="analyticsRecurring"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-calendar">
+          <div class="toolbar">
+            <div class="toolbar-group">
+              <label class="field-inline">
+                <span data-i18n="calendar.days">Số ngày</span>
+                <select id="calendarDays">
+                  <option value="7" selected>7</option>
+                  <option value="14">14</option>
+                  <option value="21">21</option>
+                  <option value="28">28</option>
+                </select>
+              </label>
+              <span class="muted" id="calendarMeta"></span>
+            </div>
+            <div class="toolbar-group">
+              <button class="btn ghost sm" data-action="calendar-refresh" data-i18n="common.refresh">Làm mới</button>
+            </div>
+          </div>
+          <div class="panel calendar-reminders" id="calendarReminders"></div>
+          <div class="dashboard-columns">
+            <div class="panel">
+              <div class="panel-head"><h2 data-i18n="calendar.plan">Kế hoạch gợi ý</h2></div>
+              <div id="calendarPlan" class="calendar-plan"></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2 data-i18n="calendar.distribution">Phân bố</h2></div>
+              <div id="calendarDistribution"></div>
+              <div class="settings-subhead" data-i18n="calendar.suggested">Giờ gợi ý</div>
+              <div id="calendarTimes" class="mini-list"></div>
+            </div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2 data-i18n="calendar.entries">Lịch đã lưu</h2></div>
+            <div id="calendarEntries"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2 data-i18n="calendar.unscheduled">Chưa xếp lịch</h2></div>
+            <div id="calendarUnscheduled" class="mini-list"></div>
+          </div>
+        </section>
+
+        <section class="view" id="view-reports">
+          <div class="toolbar">
+            <div class="toolbar-group">
+              <label class="field-inline">
+                <span data-i18n="reports.kind">Loại báo cáo</span>
+                <select id="reportKind"></select>
+              </label>
+              <label class="field-inline">
+                <span data-i18n="reports.window">Khoảng</span>
+                <select id="reportDays">
+                  <option value="1">1</option>
+                  <option value="7" selected>7</option>
+                  <option value="14">14</option>
+                  <option value="30">30</option>
+                  <option value="90">90</option>
+                </select>
+              </label>
+              <span class="muted" id="reportMeta"></span>
+            </div>
+            <div class="toolbar-group">
+              <button class="btn ghost sm" data-action="report-export" data-i18n="reports.export">Tải Markdown</button>
+            </div>
+          </div>
+          <div class="stat-grid" id="reportSummary"></div>
+          <div id="reportSections"></div>
+          <div class="panel" id="reportNotesPanel">
+            <div class="panel-head"><h2 data-i18n="reports.notes">Ghi chú</h2></div>
+            <div id="reportNotes" class="report-notes"></div>
           </div>
         </section>
 

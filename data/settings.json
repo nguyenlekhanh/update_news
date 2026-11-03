@@ -80,6 +80,10 @@
     "respect_robots": true,
     "search_more_sources": true
   },
+  "quality": {
+    "vision_model": "qwen2.5vl:7b",
+    "auto_assess_images": false
+  },
   "pipeline": {
     "auto_image": true,
     "image_variations": 1,

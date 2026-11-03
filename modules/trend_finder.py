@@ -19,6 +19,7 @@ from .search_provider import SearchError, search_service
 from .source_manager import source_manager
 from .trend_models import Candidate
 from .trend_scorer import TrendScorer
+from . import viral
 from .fact_checker import _numbers
 from .utils import (
     canonical_url,
@@ -583,6 +584,19 @@ class TrendFinder:
             raise last_error
         return {}
 
+    def _capture_history(self, topic_id: int) -> None:
+        """Store one score snapshot per discovery run for the trend timeline."""
+        topic = self.db.get_topic(topic_id)
+        if not topic:
+            return
+        try:
+            self.db.add_history(topic_id, viral.snapshot(topic, topic.get("articles") or []))
+        except Exception as exc:  # noqa: BLE001 - history must never break discovery
+            self.db.add_log(
+                f"Không ghi được lịch sử điểm cho chủ đề #{topic_id}: {exc}",
+                "warning", "trends",
+            )
+
     # ---------------------------------------------------------------- persist
     def _persist(self, clusters: list[dict], target_lang: str) -> dict:
         recent = self.db.recent_topics(limit=600)
@@ -621,6 +635,7 @@ class TrendFinder:
                     },
                 )
                 merged += 1
+                self._capture_history(match["id"])
                 saved_topics.append(self._topic_summary(match["id"]))
                 continue
             if created >= len(clusters):
@@ -654,6 +669,7 @@ class TrendFinder:
             )
             for article in cluster["articles"]:
                 self.db.add_article(topic_id, article)
+            self._capture_history(topic_id)
             created += 1
             saved_topics.append(self._topic_summary(topic_id))
             recent.append(self.db.query_one("SELECT * FROM topics WHERE id = ?", (topic_id,)))

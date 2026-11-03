@@ -21,6 +21,8 @@ class ResourceManager:
         self.comfy = comfy_client or comfyui
         self.gpu_lock = threading.Lock()
         self.last_event: str = ""
+        self._image_condition = threading.Condition()
+        self._image_active = 0
 
     # ------------------------------------------------------------------- VRAM
     @staticmethod
@@ -57,6 +59,40 @@ class ResourceManager:
                 return True
             time.sleep(1.0)
         return False
+
+    # ------------------------------------------------------------ image slots
+    def image_limit(self) -> int:
+        return max(1, min(4, int(settings.get("resource.max_concurrent_image_jobs", 1) or 1)))
+
+    @contextmanager
+    def image_slot(self, timeout: float = 900.0):
+        """Cap concurrent image generation, even if GPU serialisation is off."""
+        limit = self.image_limit()
+        deadline = time.time() + max(5.0, timeout)
+        acquired = False
+        with self._image_condition:
+            while self._image_active >= limit:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        "Đã chờ quá lâu để có slot tạo ảnh; hãy giảm số ảnh mỗi lần "
+                        "hoặc tăng resource.max_concurrent_image_jobs."
+                    )
+                self._image_condition.wait(min(5.0, remaining))
+            self._image_active += 1
+            acquired = True
+        try:
+            yield
+        finally:
+            if acquired:
+                with self._image_condition:
+                    self._image_active = max(0, self._image_active - 1)
+                    self._image_condition.notify_all()
+
+    @property
+    def image_active(self) -> int:
+        with self._image_condition:
+            return self._image_active
 
     # ---------------------------------------------------------------- phases
     @contextmanager
@@ -98,6 +134,9 @@ class ResourceManager:
         return {
             "vram": self.vram(),
             "gpu_busy": self.gpu_lock.locked(),
+            "image_active": self.image_active,
+            "image_limit": self.image_limit(),
+            "vision_default_off": not settings.get("quality.auto_assess_images", False),
             "last_event": self.last_event,
             "ollama_running": [m.get("name") for m in self.ollama.running_models()],
             "settings": settings.section("resource"),
